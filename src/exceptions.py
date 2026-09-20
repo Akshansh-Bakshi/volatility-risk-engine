@@ -1,0 +1,41 @@
+"""Project-wide exception hierarchy.
+
+Every error this package raises deliberately derives from
+:class:`VolatilityRiskEngineError`.  Callers, including the UI layer, can
+therefore handle expected failures without masking unrelated programming
+errors.  Domain-specific subclasses are added next to the code that raises them.
+"""
+
+from __future__ import annotations
+
+
+class VolatilityRiskEngineError(Exception):
+    """Base class for all errors raised deliberately by this package."""
+
+
+class ConfigurationError(VolatilityRiskEngineError):
+    """Raised when configuration values or logging setup are invalid."""
+
+
+class DataError(VolatilityRiskEngineError):
+    """Base class for failures while obtaining or validating market data."""
+
+
+class DataFetchError(DataError):
+    """The data provider could not be reached or failed while serving the request."""
+
+
+class InvalidTickerError(DataError):
+    """The provider does not recognise the requested symbol."""
+
+
+class EmptyDataError(DataError):
+    """The provider returned no rows, or no row carrying a usable price."""
+
+
+class InsufficientHistoryError(DataError):
+    """Fewer usable observations are available than the configured minimum."""
+
+
+class DataValidationError(DataError):
+    """A request, provider output or cached entry violates the market data contract."""

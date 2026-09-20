@@ -1,0 +1,23 @@
+# Volatility Analytics & Market Risk Engine
+# Lower bounds only: no upper pins, so the resolver can pick current, mutually
+# compatible releases.  Requires Python 3.10+.
+
+# Numerical and data stack
+numpy>=1.26
+pandas>=2.1
+scipy>=1.11.2
+
+# Econometrics and volatility modelling
+statsmodels>=0.14.1
+arch>=7.0
+
+# Market data
+yfinance>=0.2.60
+
+# Visualisation and application
+plotly>=5.18
+matplotlib>=3.8
+streamlit>=1.35
+
+# Testing
+pytest>=8.0

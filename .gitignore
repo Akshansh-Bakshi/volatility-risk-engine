@@ -1,0 +1,53 @@
+# --- Python ---
+__pycache__/
+*.py[cod]
+*$py.class
+*.egg-info/
+.eggs/
+build/
+dist/
+pip-wheel-metadata/
+
+# --- Virtual environments ---
+.venv/
+venv/
+env/
+ENV/
+
+# --- Test, coverage and tooling caches ---
+.pytest_cache/
+.coverage
+.coverage.*
+htmlcov/
+coverage.xml
+.mypy_cache/
+.ruff_cache/
+.hypothesis/
+.tox/
+.nox/
+
+# --- Notebooks ---
+.ipynb_checkpoints/
+
+# --- IDE / editor / OS ---
+.idea/
+.vscode/
+*.swp
+*~
+.DS_Store
+Thumbs.db
+
+# --- Secrets and local configuration (the template is tracked) ---
+.env
+.env.*
+!.env.example
+.streamlit/secrets.toml
+
+# --- Generated data and artifacts ---
+# Anchored to the repository root so that the `src/data/` package stays tracked.
+/data/
+/artifacts/
+/outputs/
+/reports/
+/logs/
+*.log
