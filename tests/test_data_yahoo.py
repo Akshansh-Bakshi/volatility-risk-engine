@@ -58,7 +58,7 @@ def test_successful_fetch_returns_the_project_schema(fake: FakeYahoo) -> None:
     assert np.array_equal(frame["high"].to_numpy(), STORED["high"].to_numpy())
     # ... and the shared validation accepts it unchanged.
     cleaned, dropped = validate_prices(frame, make_request(), min_observations=250)
-    assert dropped == 0 and len(cleaned) == len(STORED)
+    assert len(dropped) == 0 and len(cleaned) == len(STORED)
 
 
 def test_history_is_requested_with_every_value_affecting_option_pinned(fake: FakeYahoo) -> None:

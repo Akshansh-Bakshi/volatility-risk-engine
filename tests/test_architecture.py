@@ -187,3 +187,37 @@ def test_yfinance_is_imported_only_by_the_yahoo_provider() -> None:
 
 def test_the_yahoo_provider_is_wired_only_by_the_composition_root() -> None:
     assert _importers_of("src.data.yahoo") == {"src/data/factory.py"}
+
+
+# --- preprocessing stays independent of vendors and of the data layer internals -----------------
+
+
+def _imports_of(relative_path: str) -> set[str]:
+    path = SRC_ROOT.parent / relative_path
+    module_name, is_package = _module_name(path)
+    return imported_modules(path.read_text(encoding="utf-8"), module_name, is_package=is_package)
+
+
+def _data_modules_used_by(relative_path: str) -> set[str]:
+    """The ``src.data`` modules (not attributes) a file imports from."""
+    known = {"src.data"} | {f"src.data.{p.stem}" for p in (SRC_ROOT / "data").glob("[a-z]*.py")}
+    used: set[str] = set()
+    for name in _imports_of(relative_path):
+        if name == "src.data" or name.startswith("src.data."):
+            used.add(max((m for m in known if name == m or name.startswith(m + ".")), key=len))
+    return used
+
+
+def test_preprocessing_uses_only_the_domain_types_and_validation_of_the_data_layer() -> None:
+    allowed = {"src.data", "src.data.market_data", "src.data.validation"}
+    files = sorted((SRC_ROOT / "preprocessing").glob("*.py"))
+
+    for path in files:
+        used = _data_modules_used_by(path.relative_to(SRC_ROOT.parent).as_posix())
+        assert used <= allowed, f"{path.name} reaches into {sorted(used - allowed)}"
+
+
+def test_the_return_series_domain_module_does_not_know_the_data_layer_at_all() -> None:
+    imports = _imports_of("src/preprocessing/return_series.py")
+
+    assert not {name for name in imports if name.startswith(("src.data", "yfinance"))}

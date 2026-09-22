@@ -9,7 +9,7 @@ Design, in short:
   identity is stored inside the file and checked on read, so a renamed or copied
   file can never answer the wrong request.
 * **Only validated data is stored,** after cleaning, together with its provenance
-  (source, download time, rows dropped).  Entries are re-validated on every read.
+  (source, download time, dates of removed rows).  Entries are re-validated on every read.
 * **JSON, written atomically.**  Human-readable, no extra dependencies, and
   Python's float ``repr`` round-trips float64 values exactly.  Files are written
   to a temporary name and moved into place, so readers never see partial writes.
@@ -44,7 +44,7 @@ from src.logging_config import PACKAGE_LOGGER_NAME
 logger = logging.getLogger(f"{PACKAGE_LOGGER_NAME}.data.cache")
 
 CACHE_SUBDIRECTORY = Path("cache") / "market"
-SCHEMA_VERSION = 1
+SCHEMA_VERSION = 2  # v2: dropped_dates (dates) replaced the rows_dropped count
 
 # A window is treated as settled once the download happened more than this many
 # days after its last requested date.  The margin covers exchanges in timezones
@@ -163,7 +163,7 @@ def _serialize(market_data: MarketData) -> dict[str, Any]:
         **_identity(market_data.request),
         "source": market_data.source,
         "fetched_at": market_data.fetched_at.astimezone(timezone.utc).isoformat(),
-        "rows_dropped": market_data.rows_dropped,
+        "dropped_dates": market_data.dropped_dates.strftime("%Y-%m-%d").tolist(),
         "index": pd.DatetimeIndex(prices.index).strftime("%Y-%m-%d").tolist(),
         "columns": {
             name: [None if math.isnan(value) else value for value in prices[name].tolist()]
@@ -192,6 +192,8 @@ def _deserialize(payload: dict[str, Any], request: MarketDataRequest) -> MarketD
         prices=prices,
         source=str(payload["source"]),
         fetched_at=datetime.fromisoformat(payload["fetched_at"]),
-        rows_dropped=int(payload["rows_dropped"]),
+        dropped_dates=pd.DatetimeIndex(
+            pd.to_datetime(payload["dropped_dates"]), name=INDEX_NAME
+        ).as_unit("ns"),
     )
 

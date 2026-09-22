@@ -22,7 +22,9 @@ from tests.data_fakes import datetime_index, make_prices, make_request
 MIN_OBS = 250
 
 
-def validate(frame: pd.DataFrame, **request_overrides: object) -> tuple[pd.DataFrame, int]:
+def validate(
+    frame: pd.DataFrame, **request_overrides: object
+) -> tuple[pd.DataFrame, pd.DatetimeIndex]:
     return validate_prices(frame, make_request(**request_overrides), min_observations=MIN_OBS)
 
 
@@ -34,7 +36,7 @@ def test_clean_frame_is_returned_in_the_project_schema() -> None:
 
     cleaned, dropped = validate(frame)
 
-    assert dropped == 0
+    assert isinstance(dropped, pd.DatetimeIndex) and len(dropped) == 0
     assert list(cleaned.columns) == list(STANDARD_COLUMNS)
     assert isinstance(cleaned.index, pd.DatetimeIndex)
     assert cleaned.index.tz is None
@@ -242,7 +244,8 @@ def test_rows_without_a_close_are_removed_never_filled(
 
     cleaned, dropped = validate(frame)
 
-    assert dropped == 3
+    assert list(dropped) == missing, "the exact dates removed are reported, not just a count"
+    assert dropped.name == "date" and str(dropped.dtype) == "datetime64[ns]"
     assert len(cleaned) == len(frame) - 3
     assert not cleaned.index.isin(missing).any()
     assert set(cleaned.index) <= set(frame.index), "no observation may be invented"
@@ -261,7 +264,7 @@ def test_missing_values_outside_close_are_preserved_as_delivered() -> None:
 
     cleaned, dropped = validate(frame)
 
-    assert dropped == 0
+    assert len(dropped) == 0
     assert len(cleaned) == len(frame)
     row = cleaned.loc[frame.index[7]]
     assert row[["open", "high", "volume"]].isna().all()

@@ -29,7 +29,7 @@ pytestmark = pytest.mark.live
 def fetch_validated(request: MarketDataRequest, min_observations: int) -> pd.DataFrame:
     frame = YahooFinanceProvider().fetch(request)
     cleaned, dropped = validate_prices(frame, request, min_observations=min_observations)
-    assert dropped == 0
+    assert len(dropped) == 0
     return cleaned
 
 

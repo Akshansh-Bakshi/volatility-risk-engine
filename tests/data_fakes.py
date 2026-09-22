@@ -3,15 +3,16 @@
 from __future__ import annotations
 
 import warnings
+from collections.abc import Sequence
 from dataclasses import dataclass, field
-from datetime import date
+from datetime import date, datetime, timezone
 from typing import Any
 
 import numpy as np
 import pandas as pd
 from yfinance import exceptions as yf_exceptions
 
-from src.data.market_data import INDEX_NAME, MarketDataRequest
+from src.data.market_data import INDEX_NAME, MarketData, MarketDataRequest
 
 _NO_OVERRIDE: Any = object()
 
@@ -47,6 +48,47 @@ def make_request(**overrides: Any) -> MarketDataRequest:
     fields: dict[str, Any] = {"ticker": "TEST", "start": date(2023, 1, 2), "end": None}
     fields.update(overrides)
     return MarketDataRequest(**fields)
+
+
+# Later than every date make_prices() produces, so its last bar is not provisional.
+DEFAULT_FETCHED_AT = datetime(2024, 6, 3, 12, 0, tzinfo=timezone.utc)
+
+
+def prices_from_closes(closes: Sequence[float], dates: Sequence[str]) -> pd.DataFrame:
+    """Standard-schema frame whose close is ``closes`` (other price columns copy it)."""
+    close = np.asarray(closes, dtype="float64")
+    return pd.DataFrame(
+        {"open": close, "high": close, "low": close, "close": close, "volume": 1_000.0},
+        index=pd.DatetimeIndex(list(dates), name=INDEX_NAME),
+    )
+
+
+def make_market_data(
+    prices: pd.DataFrame | None = None,
+    *,
+    dropped_dates: Sequence[str] = (),
+    fetched_at: datetime = DEFAULT_FETCHED_AT,
+    adjust_prices: bool = True,
+    ticker: str = "TEST",
+    source: str = "unit_test",
+    end: date | None = None,
+) -> MarketData:
+    """Build a ``MarketData`` around ``prices`` (default: :func:`make_prices`) without a loader.
+
+    The frame is used as given, so tests can hand preprocessing deliberately broken prices
+    that the loader would have rejected.
+    """
+    frame = make_prices() if prices is None else prices
+    request = MarketDataRequest(
+        ticker, pd.Timestamp(frame.index[0]).date(), end, adjust_prices=adjust_prices
+    )
+    return MarketData(
+        request=request,
+        prices=frame,
+        source=source,
+        fetched_at=fetched_at,
+        dropped_dates=pd.DatetimeIndex(list(dropped_dates), name=INDEX_NAME),
+    )
 
 
 @dataclass

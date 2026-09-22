@@ -116,6 +116,36 @@ def test_market_data_exposes_the_authoritative_series_and_date_bounds() -> None:
     assert data.from_cache is False
 
 
+def test_rows_dropped_is_derived_from_the_recorded_dates() -> None:
+    dropped = pd.DatetimeIndex(["2023-01-04", "2023-01-05"], name="date")
+
+    data = MarketData(
+        request=MarketDataRequest("TEST", date(2023, 1, 2)),
+        prices=make_prices(periods=10),
+        source="unit_test",
+        fetched_at=UTC_NOW,
+        dropped_dates=dropped,
+    )
+
+    assert data.rows_dropped == 2 and data.dropped_dates.equals(dropped)
+
+
+@pytest.mark.parametrize(
+    "dropped",
+    [pd.DatetimeIndex(["2023-01-04"], tz="UTC"), ["2023-01-04"], pd.Index([1, 2])],
+    ids=["tz-aware", "list", "not-datetimes"],
+)
+def test_dropped_dates_must_be_a_naive_datetime_index(dropped: object) -> None:
+    with pytest.raises(DataValidationError, match="dropped_dates"):
+        MarketData(
+            request=MarketDataRequest("TEST", date(2023, 1, 2)),
+            prices=make_prices(periods=3),
+            source="unit_test",
+            fetched_at=UTC_NOW,
+            dropped_dates=dropped,  # type: ignore[arg-type]
+        )
+
+
 @pytest.mark.parametrize(
     "fetched_at",
     [

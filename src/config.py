@@ -43,10 +43,25 @@ DEFAULT_ADJUST_PRICES = True
 DEFAULT_MIN_OBSERVATIONS = 250
 DEFAULT_USE_CACHE = True
 DEFAULT_CACHE_MAX_AGE_HOURS = 6.0
+DEFAULT_INCLUDE_PROVISIONAL_BAR = False
+DEFAULT_MAX_GAP_WEEKDAYS = 1
+DEFAULT_MIN_RETURNS = 250
 DEFAULT_CONFIDENCE_LEVELS: tuple[float, ...] = (0.95, 0.99)
 DEFAULT_LOG_LEVEL = "INFO"
 
 _DATE_FORMAT = "%Y-%m-%d"
+
+
+def _require_bool(section: str, name: str, value: object) -> None:
+    if not isinstance(value, bool):
+        raise ConfigurationError(f"{section}.{name} must be a boolean; got {value!r}.")
+
+
+def _require_int(section: str, name: str, value: object, *, minimum: int) -> None:
+    if isinstance(value, bool) or not isinstance(value, int) or value < minimum:
+        raise ConfigurationError(
+            f"{section}.{name} must be an integer >= {minimum}; got {value!r}."
+        )
 
 
 @dataclass(frozen=True)
@@ -90,18 +105,9 @@ class DataConfig:
             )
 
         object.__setattr__(self, "data_dir", Path(self.data_dir).expanduser())
-        for name in ("adjust_prices", "use_cache"):
-            value = getattr(self, name)
-            if not isinstance(value, bool):
-                raise ConfigurationError(f"data.{name} must be a boolean; got {value!r}.")
-        if (
-            isinstance(self.min_observations, bool)
-            or not isinstance(self.min_observations, int)
-            or self.min_observations < 2
-        ):
-            raise ConfigurationError(
-                f"data.min_observations must be an integer >= 2; got {self.min_observations!r}."
-            )
+        _require_bool("data", "adjust_prices", self.adjust_prices)
+        _require_bool("data", "use_cache", self.use_cache)
+        _require_int("data", "min_observations", self.min_observations, minimum=2)
         max_age = self.cache_max_age_hours
         if (
             isinstance(max_age, bool)
@@ -113,6 +119,31 @@ class DataConfig:
                 f"data.cache_max_age_hours must be a positive, finite number; got {max_age!r}."
             )
         object.__setattr__(self, "cache_max_age_hours", float(max_age))
+
+
+@dataclass(frozen=True)
+class PreprocessingConfig:
+    """How validated prices become a return series.
+
+    Attributes:
+        include_provisional_bar: Whether a latest bar that may still be forming
+            (see :mod:`src.preprocessing.returns`) is kept.  ``False`` excludes it,
+            so only finalised observations reach the modelling layers.
+        max_gap_weekdays: Number of consecutive weekdays without an observation
+            that a return may span before it is flagged as spanning a gap.  ``1``
+            tolerates a single closure (an ordinary exchange holiday, which is
+            indistinguishable from one missing session without a trading calendar).
+        min_returns: Minimum number of returns required to build a return series.
+    """
+
+    include_provisional_bar: bool = DEFAULT_INCLUDE_PROVISIONAL_BAR
+    max_gap_weekdays: int = DEFAULT_MAX_GAP_WEEKDAYS
+    min_returns: int = DEFAULT_MIN_RETURNS
+
+    def __post_init__(self) -> None:
+        _require_bool("preprocessing", "include_provisional_bar", self.include_provisional_bar)
+        _require_int("preprocessing", "max_gap_weekdays", self.max_gap_weekdays, minimum=0)
+        _require_int("preprocessing", "min_returns", self.min_returns, minimum=2)
 
 
 @dataclass(frozen=True)
@@ -172,6 +203,7 @@ class Settings:
     """Root configuration object grouping all configuration sections."""
 
     data: DataConfig = field(default_factory=DataConfig)
+    preprocessing: PreprocessingConfig = field(default_factory=PreprocessingConfig)
     risk: RiskConfig = field(default_factory=RiskConfig)
     logging: LoggingConfig = field(default_factory=LoggingConfig)
 
@@ -266,6 +298,17 @@ def _load_data_config(env: Mapping[str, str]) -> DataConfig:
     return DataConfig(**kwargs)
 
 
+def _load_preprocessing_config(env: Mapping[str, str]) -> PreprocessingConfig:
+    kwargs: dict[str, Any] = {}
+    if (include := _read_env(env, "INCLUDE_PROVISIONAL_BAR")) is not None:
+        kwargs["include_provisional_bar"] = _parse_bool("INCLUDE_PROVISIONAL_BAR", include)
+    if (gap := _read_env(env, "MAX_GAP_WEEKDAYS")) is not None:
+        kwargs["max_gap_weekdays"] = _parse_number("MAX_GAP_WEEKDAYS", gap, int, "an integer")
+    if (minimum := _read_env(env, "MIN_RETURNS")) is not None:
+        kwargs["min_returns"] = _parse_number("MIN_RETURNS", minimum, int, "an integer")
+    return PreprocessingConfig(**kwargs)
+
+
 def _load_risk_config(env: Mapping[str, str]) -> RiskConfig:
     kwargs: dict[str, Any] = {}
     if (levels := _read_env(env, "CONFIDENCE_LEVELS")) is not None:
@@ -294,6 +337,7 @@ def load_settings(env: Mapping[str, str] | None = None) -> Settings:
     source = os.environ if env is None else env
     return Settings(
         data=_load_data_config(source),
+        preprocessing=_load_preprocessing_config(source),
         risk=_load_risk_config(source),
         logging=_load_logging_config(source),
     )

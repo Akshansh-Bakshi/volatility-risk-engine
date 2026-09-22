@@ -14,7 +14,7 @@ strict and has exactly one repair:
   artificial zero returns that bias volatility downwards.  The consequence, which
   return construction must respect, is that the return across a removed row spans
   more than one session.  Removals are counted, logged with their dates, and
-  reported on :class:`~src.data.market_data.MarketData`.
+  recorded on :class:`~src.data.market_data.MarketData` (``dropped_dates``).
 * **Preserved as delivered:** missing values in ``open``, ``high``, ``low`` and
   ``volume`` on rows that do have a close.
 
@@ -119,7 +119,7 @@ def _numeric_values(frame: pd.DataFrame, context: str) -> pd.DataFrame:
 
 def validate_prices(
     frame: pd.DataFrame, request: MarketDataRequest, *, min_observations: int
-) -> tuple[pd.DataFrame, int]:
+) -> tuple[pd.DataFrame, pd.DatetimeIndex]:
     """Validate ``frame`` against the market data contract and return it cleaned.
 
     Args:
@@ -128,9 +128,11 @@ def validate_prices(
         min_observations: Minimum number of usable rows required after cleaning.
 
     Returns:
-        ``(prices, rows_dropped)``: a new float64 frame in standard column order
-        with a ``datetime64[ns]`` session-date index, and the number of rows
-        removed for lacking a close.  The input is never modified.
+        ``(prices, dropped_dates)``: a new float64 frame in standard column order
+        with a ``datetime64[ns]`` session-date index, and the dates of the rows
+        removed for lacking a close (empty when none).  Later stages need the
+        dates, not just a count, to tell which returns span a removed row.  The
+        input is never modified.
 
     Raises:
         EmptyDataError: No rows, or no row with a close.
@@ -161,10 +163,10 @@ def validate_prices(
         )
 
     missing_close = values[PRICE_COLUMN].isna().to_numpy()
-    rows_dropped = int(missing_close.sum())
-    if rows_dropped == len(values):
+    n_missing = int(missing_close.sum())
+    if n_missing == len(values):
         raise EmptyDataError(
-            f"No usable observations for {context}: all {rows_dropped} rows lack a close price."
+            f"No usable observations for {context}: all {n_missing} rows lack a close price."
         )
     usable = values.loc[~missing_close].copy()
     usable_index = index[~missing_close]
@@ -174,12 +176,13 @@ def validate_prices(
         raise DataValidationError(
             f"Invalid prices for {context}: non-positive close on {_dates(non_positive)}."
         )
-    if rows_dropped:
+    dropped = index[missing_close]
+    if n_missing:
         logger.warning(
             "Dropped %d row(s) without a close price for %s (not filled): %s",
-            rows_dropped,
+            n_missing,
             context,
-            _dates(index[missing_close]),
+            _dates(dropped),
         )
 
     if len(usable) < min_observations:
@@ -192,4 +195,4 @@ def validate_prices(
     # Rebuilding the index from raw values drops any ``freq`` the provider attached, so the
     # result does not depend on whether rows happened to be removed.
     usable.index = pd.DatetimeIndex(usable_index.as_unit("ns").to_numpy(), name=INDEX_NAME)
-    return usable, rows_dropped
+    return usable, pd.DatetimeIndex(dropped.as_unit("ns").to_numpy(), name=INDEX_NAME)

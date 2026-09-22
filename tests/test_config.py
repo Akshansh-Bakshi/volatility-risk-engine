@@ -14,6 +14,7 @@ from src.config import (
     PROJECT_ROOT,
     DataConfig,
     LoggingConfig,
+    PreprocessingConfig,
     RiskConfig,
     Settings,
     get_settings,
@@ -153,6 +154,11 @@ def test_to_dict_is_json_serialisable_and_faithful() -> None:
             "use_cache": True,
             "cache_max_age_hours": 6.0,
         },
+        "preprocessing": {
+            "include_provisional_bar": False,
+            "max_gap_weekdays": 1,
+            "min_returns": 250,
+        },
         "risk": {"confidence_levels": [0.95, 0.99]},
         "logging": {"level": "INFO", "log_file": str(Path("logs/engine.log"))},
     }
@@ -266,3 +272,78 @@ def test_data_dir_is_normalised_to_a_path_with_user_expansion() -> None:
 def test_integer_cache_age_is_stored_as_float() -> None:
     assert DataConfig(cache_max_age_hours=12).cache_max_age_hours == 12.0
     assert isinstance(DataConfig(cache_max_age_hours=12).cache_max_age_hours, float)
+
+
+# --- preprocessing settings ------------------------------------------------------------------
+
+
+def test_preprocessing_defaults_exclude_the_provisional_bar_and_tolerate_one_closure() -> None:
+    config = load_settings({}).preprocessing
+
+    assert config.include_provisional_bar is False
+    assert config.max_gap_weekdays == 1
+    assert config.min_returns == 250
+
+
+def test_preprocessing_environment_overrides() -> None:
+    config = load_settings(
+        {
+            "VRE_INCLUDE_PROVISIONAL_BAR": "true",
+            "VRE_MAX_GAP_WEEKDAYS": "0",
+            "VRE_MIN_RETURNS": "500",
+        }
+    ).preprocessing
+
+    assert config == PreprocessingConfig(
+        include_provisional_bar=True, max_gap_weekdays=0, min_returns=500
+    )
+
+
+def test_blank_preprocessing_variables_fall_back_to_defaults() -> None:
+    blanks = {
+        f"VRE_{name}": "" for name in ("INCLUDE_PROVISIONAL_BAR", "MAX_GAP_WEEKDAYS", "MIN_RETURNS")
+    }
+
+    assert load_settings(blanks) == load_settings({})
+
+
+@pytest.mark.parametrize(
+    "env",
+    [
+        {"VRE_INCLUDE_PROVISIONAL_BAR": "sometimes"},
+        {"VRE_MAX_GAP_WEEKDAYS": "-1"},
+        {"VRE_MAX_GAP_WEEKDAYS": "one"},
+        {"VRE_MAX_GAP_WEEKDAYS": "1.5"},
+        {"VRE_MIN_RETURNS": "1"},
+        {"VRE_MIN_RETURNS": "0"},
+        {"VRE_MIN_RETURNS": "lots"},
+    ],
+)
+def test_invalid_preprocessing_environment_values_are_rejected(env: dict[str, str]) -> None:
+    with pytest.raises(ConfigurationError):
+        load_settings(env)
+
+
+@pytest.mark.parametrize(
+    "kwargs",
+    [
+        {"include_provisional_bar": 1},
+        {"include_provisional_bar": "false"},
+        {"max_gap_weekdays": True},
+        {"max_gap_weekdays": -1},
+        {"max_gap_weekdays": 1.0},
+        {"min_returns": True},
+        {"min_returns": 1},
+        {"min_returns": 2.0},
+    ],
+)
+def test_direct_preprocessing_config_construction_is_validated(kwargs: dict[str, object]) -> None:
+    with pytest.raises(ConfigurationError):
+        PreprocessingConfig(**kwargs)  # type: ignore[arg-type]
+
+
+def test_validation_messages_name_the_section_and_field() -> None:
+    with pytest.raises(ConfigurationError, match=r"preprocessing\.min_returns.*>= 2"):
+        PreprocessingConfig(min_returns=1)
+    with pytest.raises(ConfigurationError, match=r"data\.min_observations.*>= 2"):
+        DataConfig(min_observations=1)

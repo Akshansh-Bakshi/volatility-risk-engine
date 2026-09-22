@@ -39,3 +39,17 @@ class InsufficientHistoryError(DataError):
 
 class DataValidationError(DataError):
     """A request, provider output or cached entry violates the market data contract."""
+
+
+class PreprocessingError(VolatilityRiskEngineError):
+    """Base class for failures while turning validated market data into model inputs."""
+
+
+class InvalidReturnSeriesError(PreprocessingError):
+    """Returns cannot be computed safely, or a return series violates its contract.
+
+    Raised when prices are individually valid but produce non-finite log returns
+    (for example an overflowing price ratio), and when a
+    :class:`~src.preprocessing.return_series.ReturnSeries` is constructed with
+    non-finite values, misaligned gap flags or inconsistent metadata.
+    """

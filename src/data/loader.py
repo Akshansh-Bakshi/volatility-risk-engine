@@ -154,7 +154,7 @@ class MarketDataLoader:
 
     def _download(self, request: MarketDataRequest) -> MarketData:
         raw = self._provider.fetch(request)
-        prices, rows_dropped = validate_prices(
+        prices, dropped_dates = validate_prices(
             raw, request, min_observations=self._min_observations
         )
         return MarketData(
@@ -162,7 +162,7 @@ class MarketDataLoader:
             prices=prices,
             source=self._provider.name,
             fetched_at=self._clock(),
-            rows_dropped=rows_dropped,
+            dropped_dates=dropped_dates,
         )
 
     @staticmethod

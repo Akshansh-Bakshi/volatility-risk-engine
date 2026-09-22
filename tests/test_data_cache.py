@@ -28,16 +28,17 @@ FETCHED_AT = datetime(2024, 3, 1, 9, 30, 15, 123456, tzinfo=timezone.utc)
 
 def make_entry(request: MarketDataRequest | None = None, **frame_edits: Any) -> MarketData:
     request = request or make_request()
-    frame = make_prices(periods=30)
+    frame = make_prices(periods=32)
+    frame.loc[frame.index[[10, 20]], "close"] = np.nan  # removed by validation, so 2 dates dropped
     frame.loc[frame.index[2], "open"] = np.nan
     frame.loc[frame.index[3], "close"] = 0.1 + 0.2  # not exactly representable in decimal
     frame.loc[frame.index[4], "low"] = 1e-9
     frame.loc[frame.index[5], "volume"] = 9_007_199_254_740_991.0  # 2**53 - 1
     frame.loc[frame.index[6], "high"] = 123456789.123456789
-    prices, _ = validate_prices(frame, request, min_observations=2)
+    prices, dropped_dates = validate_prices(frame, request, min_observations=2)
     return MarketData(
         request=request, prices=prices, source="unit_test", fetched_at=FETCHED_AT,
-        rows_dropped=2,
+        dropped_dates=dropped_dates,
     )
 
 
@@ -104,6 +105,10 @@ def test_write_then_read_round_trips_exactly(cache: MarketDataCache) -> None:
     assert restored.source == "unit_test"
     assert restored.fetched_at == FETCHED_AT
     assert restored.rows_dropped == 2
+    assert restored.dropped_dates.equals(entry.dropped_dates)
+    assert list(restored.dropped_dates) == [pd.Timestamp("2023-01-16"), pd.Timestamp("2023-01-30")]
+    assert restored.dropped_dates.name == "date"
+    assert str(restored.dropped_dates.dtype) == "datetime64[ns]"
     assert restored.from_cache is False
 
 
@@ -115,6 +120,9 @@ def test_the_cache_file_is_plain_standard_json(cache: MarketDataCache) -> None:
     assert payload["ticker"] == "TEST" and payload["end"] is None
     assert payload["adjust_prices"] is True
     assert payload["columns"]["open"][2] is None, "NaN is stored as JSON null"
+    assert payload["dropped_dates"] == ["2023-01-16", "2023-01-30"]
+    assert "rows_dropped" not in payload, "the count is derived from the dates, never stored twice"
+    assert payload["schema_version"] == 2
 
 
 def test_reading_an_absent_entry_returns_none(cache: MarketDataCache) -> None:

@@ -186,6 +186,7 @@ def test_rows_without_a_close_are_removed_counted_and_survive_the_cache(tmp_path
     cached = loader.load(make_request())
 
     assert fresh.rows_dropped == cached.rows_dropped == 2
+    assert list(fresh.dropped_dates) == list(missing) == list(cached.dropped_dates)
     assert fresh.observations == 298 and not fresh.prices.index.isin(missing).any()
     assert cached.from_cache is True
     pd.testing.assert_frame_equal(fresh.prices, cached.prices, check_exact=True)

@@ -20,7 +20,7 @@ Conventions every consumer of this package can rely on:
 
 from __future__ import annotations
 
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from datetime import date, datetime, timedelta
 
 import pandas as pd
@@ -113,8 +113,10 @@ class MarketData:
         source: Name of the provider that supplied the data.
         fetched_at: When the data was downloaded (timezone-aware, UTC).  For data
             served from the cache this is the time of the original download.
-        rows_dropped: Rows the provider delivered without a close price, removed
-            during validation.
+        dropped_dates: Session dates of rows the provider delivered without a close
+            price, removed during validation (never filled).  ``rows_dropped`` is
+            their count.  Return construction uses the dates to flag returns that
+            span a removed row.
         from_cache: Whether this object was served from the local cache.
     """
 
@@ -122,12 +124,24 @@ class MarketData:
     prices: pd.DataFrame
     source: str
     fetched_at: datetime
-    rows_dropped: int = 0
+    dropped_dates: pd.DatetimeIndex = field(
+        default_factory=lambda: pd.DatetimeIndex([], name=INDEX_NAME)
+    )
     from_cache: bool = False
 
     def __post_init__(self) -> None:
         if self.fetched_at.tzinfo is None or self.fetched_at.utcoffset() != timedelta(0):
             raise DataValidationError("MarketData.fetched_at must be timezone-aware and in UTC.")
+        dropped = self.dropped_dates
+        if not isinstance(dropped, pd.DatetimeIndex) or dropped.tz is not None:
+            raise DataValidationError(
+                "MarketData.dropped_dates must be a timezone-naive DatetimeIndex."
+            )
+
+    @property
+    def rows_dropped(self) -> int:
+        """Number of rows removed because the provider delivered no close price."""
+        return len(self.dropped_dates)
 
     @property
     def ticker(self) -> str:
