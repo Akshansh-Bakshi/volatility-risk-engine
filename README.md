@@ -5,9 +5,10 @@ market data, model how volatility evolves, forecast future risk, translate those
 forecasts into Value-at-Risk (VaR), test them rigorously out of sample, and present
 the results in a professional Streamlit application.
 
-> **Status: stage 3 of the build: return construction.** The system can obtain,
-> validate and cache daily price history and turn it into a validated log-return series
-> (`ReturnSeries`). It does **not** yet run statistical diagnostics or fit volatility
+> **Status: stage 4 of the build: EDA / dataset profiling.** The system can obtain,
+> validate and cache daily price history, turn it into a validated log-return series
+> (`ReturnSeries`), and now run a full EDA pass: dataset profile, descriptive statistics,
+> reusable matplotlib figures, and a synopsis snapshot. It does **not** yet fit volatility
 > models, and it computes no forecasts, VaR or backtests. The Streamlit app is still a
 > shell. See [Current implementation status](#current-implementation-status).
 
@@ -46,20 +47,22 @@ This project therefore contains **no machine-learning price prediction**.
 ## Planned pipeline
 
 ```
-market data → returns → statistical diagnostics → volatility models
-            → forecasting → VaR → backtesting → dashboard
+market data → returns → EDA / dataset profiling → statistical tests → volatility models
+           → forecasting → VaR → backtesting → dashboard
 ```
 
-| Stage | Package | Responsibility |
-| --- | --- | --- |
-| Market data | `src/data` | Fetch, validate and cache raw price data from external sources |
-| Returns | `src/preprocessing` | Clean and align prices; derive return series |
-| Statistical diagnostics | `src/statistics` | Characterise returns before modelling (distribution, autocorrelation, ARCH effects) |
-| Volatility models | `src/models` | Specify, estimate and select conditional volatility models behind a common interface |
-| Forecasting | `src/forecasting` | Produce forecasts using only information available at the forecast origin |
-| VaR | `src/risk` | Turn forecasts into risk measures at configurable confidence levels |
-| Backtesting | `src/backtesting` | Rolling / expanding-window re-estimation and statistical evaluation against realised outcomes |
-| Dashboard | `app.py` | Streamlit interface over the packages above |
+| Stage | Package | Status | Responsibility |
+| --- | --- | --- | --- |
+| 1 — Foundation | `src/config`, `src/logging_config`, `src/exceptions` | ✅ Done | Configuration, logging, exception hierarchy, package skeleton |
+| 2 — Market data | `src/data` | ✅ Done | Fetch, validate and cache raw price data from external sources |
+| 3 — Returns | `src/preprocessing` | ✅ Done | Clean prices; derive validated log-return series (`ReturnSeries`) |
+| 4 — EDA / Dataset profiling | `src/statistics` | ✅ Done | Dataset profile, descriptive statistics, reusable figures, synopsis snapshot |
+| 5 — Statistical tests | `src/statistics` | 🔲 Next | Stationarity, autocorrelation, ARCH-effect characterisation |
+| 6 — Volatility models | `src/models` | 🔲 Planned | Specify, estimate and select conditional volatility models |
+| 7 — Forecasting | `src/forecasting` | 🔲 Planned | Produce forecasts using only information available at the forecast origin |
+| 8 — VaR | `src/risk` | 🔲 Planned | Turn forecasts into risk measures at configurable confidence levels |
+| 9 — Backtesting | `src/backtesting` | 🔲 Planned | Rolling/expanding-window re-estimation and evaluation against realised outcomes |
+| 10 — Dashboard | `app.py` | 🔲 Planned | Streamlit interface over the completed pipeline |
 
 ## Current implementation status
 
@@ -72,14 +75,15 @@ market data → returns → statistical diagnostics → volatility models
 | Live verification against real Yahoo Finance | Opt-in tests provided (`pytest -m live`); **not yet run against Yahoo** in the development environment because outbound access was blocked |
 | Streamlit entry point | Application shell only (shows the active configuration); no data or analytics pages |
 | **Return construction (`src/preprocessing`)**: log returns, explicit decimal/percent scale, gap flags, provisional-bar policy, `ReturnSeries` | **Implemented, verified offline** |
-| Statistical diagnostics | Not started |
+| **EDA / dataset profiling (`src/statistics`)**: `DatasetProfile`, `ReturnStats`, four reusable matplotlib figures, synopsis snapshot | **Implemented, verified offline (90 new tests, 525 total)** |
+| Statistical hypothesis tests (stationarity, autocorrelation, ARCH-effect) | Not started — Stage 5 |
 | Volatility models (GARCH family) | Not started |
 | Forecasting | Not started |
 | Value-at-Risk | Not started |
 | Backtesting | Not started |
 | Dashboard | Not started |
 
-Nothing in the repository tests, models or forecasts volatility or computes risk yet.
+Nothing in the repository fits volatility models, generates forecasts or computes risk measures yet.
 
 ## Market data layer (`src/data`)
 
@@ -419,11 +423,102 @@ silently.
 unique dates, aligned boolean flags, consistent provisional-bar metadata), so an invalid
 instance cannot exist.
 
-### Not yet implemented
+### Not yet implemented in preprocessing
 
-Statistical diagnostics (stationarity, autocorrelation and ARCH-effect tests), outlier
+Statistical hypothesis tests (stationarity, autocorrelation and ARCH-effect tests), outlier
 treatment, trading calendars, multi-asset alignment, and everything downstream. No claim of
 statistical validity is made for the returns beyond their arithmetic correctness.
+
+## EDA / Dataset profiling (`src/statistics`)
+
+Stage 4 adds a lightweight exploratory data analysis layer that sits between the preprocessing
+output and the future modelling layer.  It makes no hypotheses, runs no tests and computes no
+forecasts.  Its sole purpose is to answer *"what is this dataset, and is it healthy?"*
+
+### Public API
+
+```python
+from src.statistics.profile import build_dataset_profile
+from src.statistics.descriptive import compute_return_stats
+from src.statistics.figures import (
+    plot_price_series,
+    plot_return_series,
+    plot_return_histogram,
+    plot_data_quality,
+)
+from src.statistics.snapshot import save_eda_snapshot
+
+# --- after obtaining market_data and returns via the loader / preprocessing layers ---
+profile = build_dataset_profile(market_data, returns)   # DatasetProfile
+stats   = compute_return_stats(returns)                  # ReturnStats
+
+# Figures (matplotlib, no Streamlit dependency)
+fig_price  = plot_price_series(market_data)
+fig_ret    = plot_return_series(returns)
+fig_hist   = plot_return_histogram(returns, stats)
+fig_qual   = plot_data_quality(market_data, returns)
+
+# Synopsis snapshot (writes to data/snapshots/<ticker>_<timestamp>/)
+snap_dir = save_eda_snapshot(profile, stats, returns)
+```
+
+### DatasetProfile
+
+A frozen, JSON-serialisable record of the dataset with:
+
+- **Provenance**: ticker, source, price basis, frequency, `fetched_at`, `from_cache`.
+- **Date bounds**: first/last price date, first/last return date.
+- **Observation counts**: price observations, return observations.
+- **Data quality sub-record** (`DataQualityFindings`): rows dropped for a missing close,
+  duplicate timestamps, gap-flagged returns, columns present, provisional bar status, and a
+  human-readable quality summary.
+
+`profile.to_dict()` / `profile.to_json()` produce JSON-safe output that the dashboard or
+snapshot mechanism can serialise directly.
+
+### ReturnStats
+
+A frozen dataclass with: count, mean, median, std (ddof=1), min, max, Q25, Q75, skewness
+(Fisher moment coefficient) and excess kurtosis (Fisher definition; 0 for Gaussian).  All
+stored as decimal log returns; percent-scale properties (`mean_pct`, `std_pct`, etc.) multiply
+by 100 without storing a copy.  `summary_frame()` returns a single-column DataFrame suitable
+for display.  No distribution is fitted and no hypothesis test is run.
+
+### Reusable figures
+
+All functions return a `matplotlib.figure.Figure` built with the OO API (no pyplot global
+state). The dashboard layer calls `st.pyplot(fig)` independently.
+
+| Function | Description |
+| --- | --- |
+| `plot_price_series(market_data)` | Historical close-price time series |
+| `plot_return_series(returns)` | Log-return time series; gap-spanning bars in a contrasting colour |
+| `plot_return_histogram(returns, stats)` | Return histogram with a normal density overlay |
+| `plot_data_quality(market_data, returns)` | Bar chart of price/return counts, dropped rows and flagged gaps |
+
+### Synopsis snapshot
+
+`save_eda_snapshot(profile, stats, returns, base_dir=…)` writes a timestamped directory under
+`data/snapshots/` (git-ignored) containing:
+
+- `snapshot.json` — full JSON envelope: `generated_at`, profile, decimal and percent stats.
+- `returns.csv` — decimal log-return series (two columns: `date`, `log_return_decimal`).
+
+Each call produces a unique directory name (`<ticker>_<ISO-timestamp>`), so repeated runs do
+not overwrite each other.
+
+### NIFTY 50 usage
+
+To profile NIFTY 50 instead of the default S&P 500, set the environment variable:
+
+```
+VRE_DEFAULT_TICKER=^NSEI
+```
+
+The configuration layer normalises the symbol to upper case and the data layer requests it from
+Yahoo Finance.  No other change is required; the system is not hardcoded to any single ticker.
+
+
 
 ## Architecture
 
@@ -494,12 +589,13 @@ stable interface and leaving earlier layers untouched:
 1. **Foundation**: structure, configuration, logging, tests, app shell. *(done)*
 2. **Data**: ingestion, validation and caching of market data. *(done)*
 3. **Preprocessing**: validated log returns as a `ReturnSeries`. *(done)*
-4. **Statistical diagnostics**: stationarity, autocorrelation and ARCH-effect tests on the returns.
-5. **Modelling**: a common volatility model interface, then concrete model families
+4. **EDA / Dataset profiling**: dataset profile, descriptive statistics, reusable figures, synopsis snapshot. *(done)*
+5. **Statistical diagnostics**: stationarity, autocorrelation and ARCH-effect tests on the returns. *(next)*
+6. **Modelling**: a common volatility model interface, then concrete model families
    and model selection.
-6. **Forecasting and risk**: leakage-free forecasts, then VaR.
-7. **Backtesting**: out-of-sample evaluation and formal coverage tests.
-8. **Dashboard**: the Streamlit application on top of the completed pipeline.
+7. **Forecasting and risk**: leakage-free forecasts, then VaR.
+8. **Backtesting**: out-of-sample evaluation and formal coverage tests.
+9. **Dashboard**: the Streamlit application on top of the completed pipeline.
 
 ### Design principles
 

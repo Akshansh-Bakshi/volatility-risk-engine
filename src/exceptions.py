@@ -53,3 +53,11 @@ class InvalidReturnSeriesError(PreprocessingError):
     :class:`~src.preprocessing.return_series.ReturnSeries` is constructed with
     non-finite values, misaligned gap flags or inconsistent metadata.
     """
+
+
+class StatisticsError(VolatilityRiskEngineError):
+    """Base class for failures in the statistical diagnostics layer."""
+
+
+class InvalidProfileInputError(StatisticsError):
+    """The inputs supplied to the EDA layer are invalid or inconsistent."""
