@@ -5,12 +5,14 @@ market data, model how volatility evolves, forecast future risk, translate those
 forecasts into Value-at-Risk (VaR), test them rigorously out of sample, and present
 the results in a professional Streamlit application.
 
-> **Status: stage 4 of the build: EDA / dataset profiling.** The system can obtain,
-> validate and cache daily price history, turn it into a validated log-return series
-> (`ReturnSeries`), and now run a full EDA pass: dataset profile, descriptive statistics,
-> reusable matplotlib figures, and a synopsis snapshot. It does **not** yet fit volatility
-> models, and it computes no forecasts, VaR or backtests. The Streamlit app is still a
-> shell. See [Current implementation status](#current-implementation-status).
+> **Status: stage 6 of the build: classical forecasting benchmarks complete.**
+> The system can obtain and cache daily price history, construct a validated log-return series,
+> run a full EDA pass (Stage 4) and five statistical diagnostic tests (Stage 5), and now fit
+> three classical time-series models — **ARIMA**, **SARIMA**, and **Holt-Winters** — on the
+> adjusted close-price series, generate out-of-sample forecasts from a chronological
+> train/test split, and produce audit-ready `ForecastResult` objects (frozen, JSON-serialisable).
+> It does **not** yet fit GARCH/EGARCH volatility models and computes no VaR or backtests.
+> The Streamlit app is still a shell. See [Current implementation status](#current-implementation-status).
 
 ## Research problem
 

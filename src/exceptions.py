@@ -61,3 +61,23 @@ class StatisticsError(VolatilityRiskEngineError):
 
 class InvalidProfileInputError(StatisticsError):
     """The inputs supplied to the EDA layer are invalid or inconsistent."""
+
+
+class InsufficientDataError(StatisticsError):
+    """The series is too short to run a requested statistical test."""
+
+
+class ForecastingError(VolatilityRiskEngineError):
+    """Base class for failures in the classical forecasting layer."""
+
+
+class InvalidModelConfigError(ForecastingError):
+    """A model order, parameter or configuration value is invalid."""
+
+
+class ModelNotFittedError(ForecastingError):
+    """A forecast was requested before the model was fitted."""
+
+
+class ForecastingDataError(ForecastingError):
+    """The input series supplied to the forecasting layer is invalid or too short."""

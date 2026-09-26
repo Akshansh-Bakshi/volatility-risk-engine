@@ -21,4 +21,21 @@ Public API::
         plot_data_quality,
     )
     from src.statistics.snapshot import save_eda_snapshot
+
+Stage 5 — Statistical Diagnostics
+-----------------------------------
+Public API::
+
+    from src.statistics.diagnostics import (
+        TestResult,
+        ReturnDiagnostics,
+        run_adf_test,
+        run_kpss_test,
+        run_ljung_box_returns,
+        run_ljung_box_squared,
+        run_arch_lm_test,
+        run_all_diagnostics,
+        plot_acf,
+        plot_pacf,
+    )
 """
