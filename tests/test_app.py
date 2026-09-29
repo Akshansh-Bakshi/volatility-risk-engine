@@ -4,9 +4,13 @@ from __future__ import annotations
 
 import json
 from pathlib import Path
+from datetime import date
 
 import pytest
 from streamlit.testing.v1 import AppTest
+
+from app import load_synopsis_data
+from tests.data_fakes import make_market_data, make_prices
 
 APP_PATH = Path(__file__).resolve().parents[1] / "app.py"
 APP_TITLE = "Volatility Analytics & Market Risk Engine"
@@ -47,3 +51,28 @@ def test_app_reports_invalid_configuration_instead_of_crashing(
     assert len(at.error) == 1
     assert "Invalid configuration" in at.error[0].value
     assert not at.json
+
+
+def test_synopsis_orchestration_uses_loader_and_existing_eda() -> None:
+    class StubLoader:
+        def __init__(self) -> None:
+            self.request = None
+
+        def load(self, request):
+            self.request = request
+            return make_market_data(
+                make_prices(periods=520), ticker=request.ticker, source="test_provider"
+            )
+
+    loader = StubLoader()
+    result = load_synopsis_data(loader, "^NSEI", date(2022, 1, 1), date(2024, 1, 1))
+
+    assert loader.request.ticker == "^NSEI"
+    assert loader.request.start == date(2022, 1, 1)
+    assert loader.request.end == date(2024, 1, 1)
+    assert result.profile.source == "test_provider"
+    assert result.profile.price_observations == 520
+    assert result.profile.return_observations == 518
+    assert result.profile.quality.provisional_bar is not None
+    assert result.profile.quality.provisional_bar_excluded
+    assert result.stats.count == result.returns.return_observations
