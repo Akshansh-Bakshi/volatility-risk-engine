@@ -8,6 +8,8 @@ Available figures
 -----------------
 * :func:`plot_forecast` — Training history, actual test values, and model
   forecast on a single axis.
+* :func:`plot_forecast_vs_actual` — Actual vs. forecast comparison with
+  annotated evaluation metrics (RMSE, MAE, MAPE).
 """
 
 from __future__ import annotations
@@ -81,4 +83,82 @@ def plot_forecast(
     )
     ax.legend(fontsize=8)
     ax.grid(True, alpha=0.3)
+    return fig
+
+
+def plot_forecast_vs_actual(
+    actual: pd.Series,
+    result: ForecastResult,
+    *,
+    figsize: tuple[float, float] = (14, 6),
+    title: str | None = None,
+    show_metrics: bool = True,
+) -> "matplotlib.figure.Figure":  # type: ignore[name-defined]
+    """Plot actual vs. forecast with an optional metrics annotation.
+
+    Produces a two-panel figure:
+    - Top panel: actual vs. forecast time-series.
+    - Bottom panel: forecast errors (actual − forecast) as a bar chart.
+
+    Args:
+        actual: The held-out test series (actual observed prices).
+        result: The :class:`~src.forecasting.result.ForecastResult` to evaluate.
+        figsize: Figure width × height in inches.
+        title: Override the auto-generated title.
+        show_metrics: If ``True``, annotate the top panel with RMSE, MAE and
+            MAPE computed from the supplied ``actual`` series.
+
+    Returns:
+        A ``matplotlib.figure.Figure``.
+    """
+    import matplotlib.figure as _mfig
+
+    from src.forecasting.evaluation import evaluate_forecast
+
+    fc = result.forecast_series()
+
+    fig = _mfig.Figure(figsize=figsize, tight_layout=True)
+    ax_top = fig.add_subplot(2, 1, 1)
+    ax_bot = fig.add_subplot(2, 1, 2, sharex=ax_top)
+
+    # --- top panel: actual vs forecast ---
+    ax_top.plot(actual.index, actual.values, color="#2ca02c", linewidth=1.2, label="Actual")
+    ax_top.plot(fc.index, fc.values, color="#d62728", linewidth=1.2,
+                linestyle="--", label="Forecast")
+
+    if show_metrics:
+        try:
+            ev = evaluate_forecast(actual, result)
+            mape_str = f"{ev.mape:.2f}%" if ev.mape is not None else "N/A"
+            annotation = (
+                f"RMSE={ev.rmse:.4f}  MAE={ev.mae:.4f}  MAPE={mape_str}"
+            )
+            ax_top.set_title(
+                title or (
+                    f"{result.ticker} — {result.model_name} | {annotation}"
+                )
+            )
+        except Exception:
+            ax_top.set_title(
+                title or f"{result.ticker} — {result.model_name} (metrics unavailable)"
+            )
+    else:
+        ax_top.set_title(title or f"{result.ticker} — {result.model_name}")
+
+    ax_top.set_ylabel("Price")
+    ax_top.legend(fontsize=8)
+    ax_top.grid(True, alpha=0.3)
+
+    # --- bottom panel: errors (actual − forecast) ---
+    try:
+        errors = actual.values - fc.reindex(actual.index).values
+        ax_bot.bar(actual.index, errors, color="#9467bd", alpha=0.6, width=1.0)
+    except Exception:
+        pass  # index mismatch — skip error panel gracefully
+
+    ax_bot.axhline(0, color="black", linewidth=0.7)
+    ax_bot.set_xlabel("Date")
+    ax_bot.set_ylabel("Error (actual − forecast)")
+    ax_bot.grid(True, alpha=0.3)
+
     return fig

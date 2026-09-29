@@ -1,8 +1,8 @@
 """Classical time-series forecasting benchmark layer.
 
 This package provides classical forecasting models (ARIMA, SARIMA, Holt-Winters)
-as required by the university Phase 2 curriculum, and a chronological
-train/test splitting utility.
+as required by the university Phase 2 curriculum, a chronological
+train/test splitting utility, and a forecasting evaluation layer.
 
 Architecture
 ------------
@@ -37,4 +37,16 @@ Public API::
     from src.forecasting.sarima import SARIMAForecaster
     from src.forecasting.holtwinters import HoltWintersForecaster
     from src.forecasting.figures import plot_forecast
+
+Stage 7 — Forecasting Evaluation
+----------------------------------
+Public API::
+
+    from src.forecasting.evaluation import (
+        EvaluationResult,
+        ComparisonResult,
+        evaluate_forecast,
+        compare_models,
+    )
+    from src.forecasting.figures import plot_forecast_vs_actual
 """

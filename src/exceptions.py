@@ -81,3 +81,27 @@ class ModelNotFittedError(ForecastingError):
 
 class ForecastingDataError(ForecastingError):
     """The input series supplied to the forecasting layer is invalid or too short."""
+
+
+class EvaluationError(ForecastingError):
+    """Raised when forecast evaluation cannot proceed due to bad inputs.
+
+    Examples: actual/predicted length mismatch, index misalignment,
+    empty series, or non-finite values that prevent metric computation.
+    """
+
+
+class VolatilityModelError(VolatilityRiskEngineError):
+    """Base class for failures in the volatility model fitting layer."""
+
+
+class VolatilityModelConfigError(VolatilityModelError):
+    """Invalid model configuration or parameter specification."""
+
+
+class VolatilityModelFitError(VolatilityModelError):
+    """The model optimizer failed to converge or produced non-finite outputs."""
+
+
+class VolatilityModelDataError(VolatilityModelError):
+    """The return series supplied to the volatility model is invalid or too short."""
