@@ -26,7 +26,7 @@ from src.exceptions import ConfigurationError, VolatilityRiskEngineError
 def test_defaults_are_sensible_and_environment_independent() -> None:
     settings = load_settings({})
 
-    assert settings.data.ticker == "^GSPC"
+    assert settings.data.ticker == "^NSEI"
     assert settings.data.start_date == date(2005, 1, 1)
     assert settings.data.end_date is None
     assert settings.risk.confidence_levels == (0.95, 0.99)
@@ -145,7 +145,7 @@ def test_to_dict_is_json_serialisable_and_faithful() -> None:
 
     assert payload == {
         "data": {
-            "ticker": "^GSPC",
+            "ticker": "^NSEI",
             "start_date": "2005-01-01",
             "end_date": "2024-01-31",
             "data_dir": str(PROJECT_ROOT / "data"),

@@ -264,7 +264,7 @@ Downloads are cached as validated JSON under `<data_dir>/cache/market/` (default
 ### Assets
 
 The API is generic: any Yahoo symbol works, and `ticker` is the only asset-specific input.
-The default development ticker is `^GSPC` (S&P 500 index: long, liquid history and no corporate
+The default development ticker is `^NSEI` (NIFTY 50 index: long, liquid history and no corporate
 actions). Examples:
 
 | Kind | Example | Notes |
@@ -633,7 +633,7 @@ Blank values are treated as unset. No secrets are required or stored.
 
 | Variable | Default | Meaning |
 | --- | --- | --- |
-| `VRE_DEFAULT_TICKER` | `^GSPC` | Data-provider symbol requested by default |
+| `VRE_DEFAULT_TICKER` | `^NSEI` | Data-provider symbol requested by default |
 | `VRE_DEFAULT_START_DATE` | `2005-01-01` | Default start of the date range (`YYYY-MM-DD`, inclusive) |
 | `VRE_DEFAULT_END_DATE` | *(unset)* | Default end date (inclusive); unset means "latest available", resolved at fetch time |
 | `VRE_CONFIDENCE_LEVELS` | `0.95,0.99` | Comma-separated VaR confidence levels in (0, 1) |

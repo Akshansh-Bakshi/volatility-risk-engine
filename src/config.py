@@ -36,7 +36,7 @@ VALID_LOG_LEVELS: tuple[str, ...] = ("DEBUG", "INFO", "WARNING", "ERROR", "CRITI
 
 PROJECT_ROOT = Path(__file__).resolve().parent.parent
 
-DEFAULT_TICKER = "^GSPC"
+DEFAULT_TICKER = "^NSEI"
 DEFAULT_START_DATE = date(2005, 1, 1)
 DEFAULT_DATA_DIR = PROJECT_ROOT / "data"
 DEFAULT_ADJUST_PRICES = True

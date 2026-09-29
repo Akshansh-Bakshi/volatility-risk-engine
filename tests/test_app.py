@@ -2,18 +2,17 @@
 
 from __future__ import annotations
 
-import json
 from pathlib import Path
 from datetime import date
 
 import pytest
 from streamlit.testing.v1 import AppTest
 
-from app import load_synopsis_data
+from app import _price_unit, load_synopsis_data, resolve_ticker
 from tests.data_fakes import make_market_data, make_prices
 
 APP_PATH = Path(__file__).resolve().parents[1] / "app.py"
-APP_TITLE = "Volatility Analytics & Market Risk Engine"
+APP_TITLE = "Volatility Analytics"
 
 
 def _run_app() -> AppTest:
@@ -28,16 +27,19 @@ def test_app_renders_without_errors() -> None:
     assert not at.error
 
 
-def test_app_shows_the_active_configuration(monkeypatch: pytest.MonkeyPatch) -> None:
-    monkeypatch.setenv("VRE_DEFAULT_TICKER", "spy")
-    monkeypatch.setenv("VRE_CONFIDENCE_LEVELS", "0.9,0.975")
-
+def test_app_does_not_expose_configuration_or_internal_details() -> None:
     at = _run_app()
 
     assert not at.exception
-    shown = json.loads(at.json[0].value)
-    assert shown["data"]["ticker"] == "SPY"
-    assert shown["risk"]["confidence_levels"] == [0.9, 0.975]
+    assert not at.json
+    visible = " ".join(
+        [element.value for group in (at.title, at.header, at.subheader, at.markdown, at.caption, at.info)
+         for element in group]
+    )
+    assert "Active default configuration" not in visible
+    assert "Proposed methodology" not in visible
+    assert "C:\\Users\\" not in visible
+    assert "Volatility Analytics" in visible
 
 
 def test_app_reports_invalid_configuration_instead_of_crashing(
@@ -49,7 +51,7 @@ def test_app_reports_invalid_configuration_instead_of_crashing(
 
     assert not at.exception
     assert len(at.error) == 1
-    assert "Invalid configuration" in at.error[0].value
+    assert "configuration" in at.error[0].value.lower()
     assert not at.json
 
 
@@ -76,3 +78,15 @@ def test_synopsis_orchestration_uses_loader_and_existing_eda() -> None:
     assert result.profile.quality.provisional_bar is not None
     assert result.profile.quality.provisional_bar_excluded
     assert result.stats.count == result.returns.return_observations
+
+
+def test_asset_presets_and_custom_ticker_resolution() -> None:
+    assert resolve_ticker("NIFTY 50 (^NSEI)") == "^NSEI"
+    assert resolve_ticker("Apple (AAPL)") == "AAPL"
+    assert resolve_ticker("Custom ticker", custom_ticker="  msft ") == "MSFT"
+
+
+def test_asset_price_units_are_correct_for_indices_and_equities() -> None:
+    assert _price_unit("^NSEI") == "index points"
+    assert _price_unit("RELIANCE.NS") == "₹"
+    assert _price_unit("AAPL") == "$"
