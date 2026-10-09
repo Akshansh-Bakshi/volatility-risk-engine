@@ -31,6 +31,42 @@ class DashboardMetrics:
     peak_volatility_date: str | None
 
 
+@dataclass(frozen=True)
+class InsightCard:
+    """Compact presentation form of a factual historical sample finding."""
+
+    label: str
+    value: str
+    note: str
+
+
+def insight_cards(stats: ReturnStats, metrics: DashboardMetrics) -> list[InsightCard]:
+    """Format existing descriptive outputs as short aligned dashboard cards."""
+    if stats.skewness < -0.1:
+        skew_label = "NEGATIVE SKEW"
+    elif stats.skewness > 0.1:
+        skew_label = "POSITIVE SKEW"
+    else:
+        skew_label = "LOW SKEW"
+
+    kurtosis_label = "HEAVY TAILS" if stats.excess_kurtosis > 0.0 else "TAIL SHAPE"
+    return [
+        InsightCard("MEAN DAILY RETURN", f"{stats.mean_pct:.3f}%", "Sample average"),
+        InsightCard(skew_label, f"{stats.skewness:.2f}", "Return distribution"),
+        InsightCard(kurtosis_label, f"{stats.excess_kurtosis:.2f}", "Excess kurtosis"),
+        InsightCard(
+            "MAX DRAWDOWN",
+            "N/A" if metrics.maximum_drawdown_pct is None else f"{metrics.maximum_drawdown_pct:.1f}%",
+            "Historical sample",
+        ),
+        InsightCard(
+            "20D VOLATILITY",
+            "N/A" if metrics.rolling_volatility_20_pct is None else f"{metrics.rolling_volatility_20_pct:.2f}%",
+            "Annualised sample volatility",
+        ),
+    ]
+
+
 def calculate_dashboard_metrics(
     market_data: MarketData,
     returns: ReturnSeries,

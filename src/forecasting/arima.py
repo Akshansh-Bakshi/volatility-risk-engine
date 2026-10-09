@@ -49,6 +49,7 @@ from src.exceptions import (
     InvalidModelConfigError,
     ModelNotFittedError,
 )
+from src.forecasting._forecast_index import forecast_values_by_date, resolve_forecast_index
 from src.forecasting.result import ForecastResult
 from src.logging_config import PACKAGE_LOGGER_NAME
 
@@ -147,7 +148,12 @@ class ARIMAForecaster:
         with warnings.catch_warnings(record=True) as caught:
             warnings.simplefilter("always")
             try:
-                sm_model = _ARIMA(train_series, order=self._order)
+                step_series = pd.Series(
+                    train_series.to_numpy(copy=True),
+                    index=pd.RangeIndex(len(train_series)),
+                    name=train_series.name,
+                )
+                sm_model = _ARIMA(step_series, order=self._order)
                 fit_result = sm_model.fit()
                 self._fitted_model = fit_result
                 self._aic = float(fit_result.aic)
@@ -175,11 +181,18 @@ class ARIMAForecaster:
     # Forecast                                                             #
     # ------------------------------------------------------------------ #
 
-    def forecast(self, horizon: int) -> ForecastResult:
+    def forecast(
+        self,
+        horizon: int,
+        *,
+        forecast_index: pd.DatetimeIndex | None = None,
+    ) -> ForecastResult:
         """Generate an out-of-sample forecast.
 
         Args:
             horizon: Number of steps ahead to forecast.  Must be ≥ 1.
+            forecast_index: Optional dates for the forecast steps. Required for
+                irregular session indexes; used only to label forecasts.
 
         Returns:
             A :class:`~src.forecasting.result.ForecastResult`.
@@ -198,11 +211,9 @@ class ARIMAForecaster:
             )
 
         assert self._train_series is not None
+        resolved_index = resolve_forecast_index(self._train_series, horizon, forecast_index)
         fc = self._fitted_model.forecast(steps=horizon)
-        forecast_values = {
-            str(pd.Timestamp(idx).date()): float(val)
-            for idx, val in fc.items()
-        }
+        forecast_values = forecast_values_by_date(fc, resolved_index, horizon)
 
         train = self._train_series
         p, d, q = self._order
@@ -216,8 +227,8 @@ class ARIMAForecaster:
             train_start=pd.Timestamp(train.index[0]).date(),
             train_end=pd.Timestamp(train.index[-1]).date(),
             n_train=len(train),
-            forecast_start=pd.Timestamp(list(forecast_values.keys())[0]).date(),
-            forecast_end=pd.Timestamp(list(forecast_values.keys())[-1]).date(),
+            forecast_start=resolved_index[0].date(),
+            forecast_end=resolved_index[-1].date(),
             n_forecast=horizon,
             forecast_values=forecast_values,
             fitted=True,

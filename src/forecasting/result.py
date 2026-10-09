@@ -83,7 +83,9 @@ class ForecastResult:
         The index uses the same ``date`` name and timezone-naive convention as
         the rest of the pipeline.
         """
-        dates = pd.to_datetime(list(self.forecast_values.keys()))
+        dates = pd.DatetimeIndex(
+            pd.to_datetime(list(self.forecast_values.keys())), name="date"
+        )
         values = list(self.forecast_values.values())
         return pd.Series(values, index=dates, name="forecast")
 

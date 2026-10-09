@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import html
 import logging
 from dataclasses import dataclass
 from datetime import date
@@ -10,7 +11,6 @@ import pandas as pd
 import plotly.graph_objects as go
 import streamlit as st
 
-from src import __version__
 from src.config import get_settings
 from src.data.factory import create_market_data_loader
 from src.data.loader import MarketDataLoader
@@ -19,7 +19,7 @@ from src.exceptions import ConfigurationError, DataError, PreprocessingError
 from src.logging_config import PACKAGE_LOGGER_NAME, configure_logging
 from src.preprocessing.returns import build_return_series
 from src.preprocessing.return_series import ReturnSeries
-from src.statistics.dashboard import calculate_dashboard_metrics, factual_findings
+from src.statistics.dashboard import calculate_dashboard_metrics, insight_cards
 from src.statistics.descriptive import ReturnStats, compute_return_stats
 from src.statistics.profile import DatasetProfile, build_dataset_profile
 
@@ -107,15 +107,41 @@ def _apply_visual_style() -> None:
         .stApp { background: #0b1220; color: #e6edf7; }
         [data-testid="stHeader"] { background: rgba(11,18,32,.94); }
         [data-testid="stSidebar"] { background: #101a2b; }
-        .block-container { padding-top: 1.35rem; padding-bottom: 1.2rem; max-width: 1600px; }
+        .block-container { padding-top: 1.1rem; padding-bottom: 1rem; max-width: 1680px; }
+        section[data-testid="stSidebar"], section[data-testid="stSidebar"] > div {
+            width: 16rem !important; min-width: 16rem !important; max-width: 16rem !important;
+        }
         h1, h2, h3 { color: #f3f7ff; letter-spacing: -0.02em; }
         div[data-testid="stMetric"] { background: #111d30; border: 1px solid #24344d;
-            padding: .75rem .9rem; border-radius: 12px; min-height: 105px; }
-        div[data-testid="stMetricLabel"] { color: #a9bad1; }
-        div[data-testid="stMetricValue"] { color: #f4f8ff; }
+            padding: .7rem .8rem; border-radius: 12px; height: 112px; box-sizing: border-box;
+            display: flex; flex-direction: column; justify-content: space-between; overflow: hidden; }
+        div[data-testid="stMetricLabel"] { color: #a9bad1; min-height: 1.6rem; font-size: .82rem; }
+        div[data-testid="stMetricValue"] { color: #f4f8ff; font-size: clamp(1.15rem, 1.4vw, 1.55rem); white-space: nowrap; }
         div[role="radiogroup"] { gap: .6rem; }
         .asset-symbol { color: #a8bad4; font-size: .95rem; }
         .status-dot { color: #52d6a1; font-size: 1.05rem; }
+        .product-header { display:flex; align-items:center; justify-content:space-between; gap:1rem; margin:.2rem 0 .25rem; }
+        .product-title { color:#f3f7ff; font-size:2rem; font-weight:700; line-height:1.15; letter-spacing:-.035em; }
+        .product-subtitle { color:#a9bad1; font-size:1.15rem; margin-top:.25rem; }
+        .data-status { flex:0 0 auto; border:1px solid #245743; background:#10291f; color:#86e3b6;
+            border-radius:999px; padding:.45rem .8rem; font-size:.8rem; font-weight:650; }
+        .metadata-strip { display:flex; flex-wrap:wrap; align-items:center; gap:.45rem .9rem; color:#b6c5d9;
+            border-top:1px solid #24344d; border-bottom:1px solid #24344d; padding:.55rem .1rem;
+            margin:.55rem 0 .8rem; font-size:.84rem; }
+        .metadata-strip strong { color:#f3f7ff; }
+        .health-line { border-radius:10px; padding:.65rem .8rem; min-height:2.7rem; line-height:1.4;
+            background:#111d30; border:1px solid #24344d; color:#c2d0e2; }
+        .health-good { color:#78dba9; font-weight:700; margin-right:.45rem; }
+        .health-clear { color:#78dba9; font-weight:700; margin-right:.45rem; }
+        .health-attention { color:#f0c277; font-weight:700; margin-right:.45rem; }
+        .insight-card { height:136px; box-sizing:border-box; overflow:hidden; display:flex; flex-direction:column;
+            justify-content:space-between; padding:13px 14px; border:1px solid #2a3a54; border-radius:12px;
+            background:linear-gradient(145deg,#142238,#101a2b); }
+        .insight-label { color:#9eb1cb; font-size:.69rem; letter-spacing:.075em; font-weight:700;
+            line-height:1.25; min-height:1.2rem; white-space:nowrap; overflow:hidden; text-overflow:ellipsis; }
+        .insight-value { color:#f4f8ff; font-size:clamp(1.4rem,1.75vw,1.9rem); font-weight:700;
+            line-height:1.15; white-space:nowrap; overflow:hidden; text-overflow:ellipsis; }
+        .insight-note { color:#a9bad1; font-size:.78rem; line-height:1.25; min-height:1rem; }
         </style>""",
         unsafe_allow_html=True,
     )
@@ -140,8 +166,8 @@ def _price_figure(data: SynopsisData) -> go.Figure:
         title=f"{data.profile.ticker} · Historical price",
         xaxis_title=None,
         yaxis_title=f"Price ({unit or 'units'})",
-        height=390,
-        margin={"l": 20, "r": 20, "t": 55, "b": 20},
+        height=340,
+        margin={"l": 18, "r": 18, "t": 48, "b": 18},
         hovermode="x unified",
         template="plotly_dark",
         paper_bgcolor="#0b1220",
@@ -149,6 +175,7 @@ def _price_figure(data: SynopsisData) -> go.Figure:
         font={"color": "#dbe6f5"},
         xaxis={"rangeslider": {"visible": False}, "showgrid": False},
         yaxis={"gridcolor": "#25334a", "fixedrange": False},
+        hoverlabel={"bgcolor": "#16243a", "font": {"color": "#f3f7ff", "size": 12}},
     )
     return fig
 
@@ -166,7 +193,7 @@ def _returns_figure(data: SynopsisData) -> go.Figure:
         )
     )
     fig.add_hline(y=0, line_color="#8798ad", line_width=1)
-    return _chart_layout(fig, "Daily log returns", "Return (%)", height=300)
+    return _chart_layout(fig, "Daily log returns", "Log return (%)", height=275)
 
 
 def _rolling_volatility_figure(data: SynopsisData) -> go.Figure:
@@ -181,7 +208,7 @@ def _rolling_volatility_figure(data: SynopsisData) -> go.Figure:
             hovertemplate="%{x|%d %b %Y}<br>Annualised volatility: %{y:.2f}%<extra></extra>",
         )
     )
-    return _chart_layout(fig, "Rolling volatility · 20 sessions", "Annualised volatility (%)", height=300)
+    return _chart_layout(fig, "Rolling volatility · 20 sessions", "Annualised volatility (%)", height=275)
 
 
 def _drawdown_figure(data: SynopsisData) -> go.Figure:
@@ -198,7 +225,7 @@ def _drawdown_figure(data: SynopsisData) -> go.Figure:
             hovertemplate="%{x|%d %b %Y}<br>Drawdown: %{y:.2f}%<extra></extra>",
         )
     )
-    return _chart_layout(fig, "Historical drawdown", "Drawdown (%)", height=270)
+    return _chart_layout(fig, "Historical drawdown", "Peak-to-trough drawdown (%)", height=250)
 
 
 def _distribution_figure(data: SynopsisData) -> go.Figure:
@@ -215,7 +242,7 @@ def _distribution_figure(data: SynopsisData) -> go.Figure:
         )
     )
     fig.add_vline(x=data.stats.mean_pct, line_dash="dash", line_color="#f0b85a", annotation_text="Mean")
-    return _chart_layout(fig, "Daily return distribution", "Daily log return (%)", height=320)
+    return _chart_layout(fig, "Daily return distribution", "Daily log return (%)", height=300)
 
 
 def _chart_layout(fig: go.Figure, title: str, y_title: str, *, height: int) -> go.Figure:
@@ -224,7 +251,7 @@ def _chart_layout(fig: go.Figure, title: str, y_title: str, *, height: int) -> g
         xaxis_title=None,
         yaxis_title=y_title,
         height=height,
-        margin={"l": 18, "r": 15, "t": 52, "b": 22},
+        margin={"l": 18, "r": 14, "t": 46, "b": 18},
         hovermode="x unified",
         template="plotly_dark",
         paper_bgcolor="#0b1220",
@@ -233,6 +260,7 @@ def _chart_layout(fig: go.Figure, title: str, y_title: str, *, height: int) -> g
         xaxis={"showgrid": False},
         yaxis={"gridcolor": "#25334a"},
         showlegend=False,
+        hoverlabel={"bgcolor": "#16243a", "font": {"color": "#f3f7ff", "size": 12}},
     )
     return fig
 
@@ -242,98 +270,130 @@ def _render_dashboard(data: SynopsisData) -> None:
     metrics = calculate_dashboard_metrics(data.market_data, data.returns)
     ticker = profile.ticker
     unit = _price_unit(ticker)
+    ticker_text = html.escape(ticker)
+    source_text = html.escape(profile.source.replace("_", " ").title())
+    cache_status = "cached" if profile.from_cache else "updated"
 
-    header_left, header_right = st.columns([4, 1])
-    with header_left:
-        st.title("Volatility Analytics")
-        st.markdown(f"### Market Risk Engine <span class='asset-symbol'>· {ticker}</span>", unsafe_allow_html=True)
-        st.caption(
-            f"{profile.frequency} · {profile.first_price_date:%d %b %Y} – {profile.last_price_date:%d %b %Y} · "
-            f"{profile.price_observations:,} price observations · Updated {profile.fetched_at:%d %b %Y, %H:%M UTC}"
-        )
-    with header_right:
-        st.markdown(
-            f"<div style='text-align:right;padding-top:1.3rem'><span class='status-dot'>●</span> "
-            f"<span style='color:#b6c5d9'>{'Cached data' if profile.from_cache else 'Data connected'}</span></div>",
-            unsafe_allow_html=True,
-        )
-        st.caption(f"Source · {profile.source}")
+    st.markdown(
+        f"""<div class="product-header">
+          <div><div class="product-title">Volatility Analytics</div>
+          <div class="product-subtitle">Market Risk Engine</div></div>
+          <div class="data-status"><span class="status-dot">●</span> {source_text} data · {cache_status}</div>
+        </div>
+        <div class="metadata-strip">
+          <strong>{ticker_text}</strong><span>Frequency {html.escape(profile.frequency)}</span>
+          <span>{profile.first_price_date:%d %b %Y} – {profile.last_price_date:%d %b %Y}</span>
+          <span>{profile.price_observations:,} observations</span>
+          <span>Fetched {profile.fetched_at:%d %b %Y · %H:%M UTC}</span>
+        </div>""",
+        unsafe_allow_html=True,
+    )
 
     if profile.price_observations < MIN_SYNOPSIS_OBSERVATIONS:
-        st.warning(f"Short sample: {profile.price_observations} price observations (500 recommended for this synopsis).")
+        st.warning(
+            f"Short sample: {profile.price_observations} price observations "
+            "(500 recommended for this synopsis)."
+        )
 
     st.markdown("#### Market snapshot")
-    kpis = st.columns(5)
-    kpis[0].metric(f"Latest price · {unit or 'units'}", _format_metric(metrics.latest_price, decimals=2))
+    kpis = st.columns(5, gap="small")
+    price_suffix = f" {unit}" if unit else ""
+    kpis[0].metric("Latest price", _format_metric(metrics.latest_price, price_suffix, 2))
     kpis[1].metric(
-        "Latest completed daily return",
+        "Last completed daily return",
         _format_metric(metrics.latest_completed_return_pct, "%", 3),
-        help=(f"Observation date: {metrics.latest_completed_return_date}"
-              if metrics.latest_completed_return_date else "No completed return is available."),
+        help=(
+            f"Observation date: {metrics.latest_completed_return_date}"
+            if metrics.latest_completed_return_date
+            else "No completed return is available."
+        ),
     )
-    kpis[2].metric("20-session rolling volatility", _format_metric(metrics.rolling_volatility_20_pct, "%", 2), "annualised")
-    kpis[3].metric("Trailing 20-session return", _format_metric(metrics.trailing_20_session_return_pct, "%", 2), "historical")
-    kpis[4].metric("Maximum drawdown", _format_metric(metrics.maximum_drawdown_pct, "%", 2), "selected period")
+    kpis[2].metric("20D volatility · ann.", _format_metric(metrics.rolling_volatility_20_pct, "%", 2))
+    kpis[3].metric("20D return · historical", _format_metric(metrics.trailing_20_session_return_pct, "%", 2))
+    kpis[4].metric("Maximum drawdown", _format_metric(metrics.maximum_drawdown_pct, "%", 2))
 
-    st.plotly_chart(_price_figure(data), use_container_width=True, config={"displaylogo": False, "scrollZoom": True})
+    st.plotly_chart(
+        _price_figure(data),
+        use_container_width=True,
+        config={"displaylogo": False, "scrollZoom": True},
+    )
 
-    behavior_tab, distribution_tab, profile_tab = st.tabs(["Market behaviour", "Returns & distribution", "Profile & data health"])
+    behavior_tab, distribution_tab, profile_tab = st.tabs(
+        ["Market behaviour", "Returns & distribution", "Profile & data health"]
+    )
     with behavior_tab:
-        left, right = st.columns(2)
+        left, right = st.columns(2, gap="small")
         with left:
             st.plotly_chart(_returns_figure(data), use_container_width=True, config={"displaylogo": False})
         with right:
-            st.plotly_chart(_rolling_volatility_figure(data), use_container_width=True, config={"displaylogo": False})
+            st.plotly_chart(
+                _rolling_volatility_figure(data),
+                use_container_width=True,
+                config={"displaylogo": False},
+            )
         st.plotly_chart(_drawdown_figure(data), use_container_width=True, config={"displaylogo": False})
+
     with distribution_tab:
         st.plotly_chart(_distribution_figure(data), use_container_width=True, config={"displaylogo": False})
-        stats_cols = st.columns(4)
+        stats_cols = st.columns(4, gap="small")
         stats_cols[0].metric("Count", f"{stats.count:,}")
         stats_cols[1].metric("Mean / median", f"{stats.mean_pct:.3f}% / {stats.median_pct:.3f}%")
         stats_cols[2].metric("Std. deviation", f"{stats.std_pct:.3f}%")
         stats_cols[3].metric("Skew / excess kurtosis", f"{stats.skewness:.2f} / {stats.excess_kurtosis:.2f}")
-        st.caption(f"Observed range: {stats.minimum_pct:.2f}% to {stats.maximum_pct:.2f}% · Daily log returns")
+        st.caption(
+            f"Observed range: {stats.minimum_pct:.2f}% to {stats.maximum_pct:.2f}% · Daily log returns"
+        )
+
     with profile_tab:
-        st.markdown("#### Data health")
         q = profile.quality
-        health = st.columns(6)
+        st.markdown("#### Data health")
+        health = st.columns(6, gap="small")
         health[0].metric("Price observations", f"{profile.price_observations:,}")
         health[1].metric("Return observations", f"{profile.return_observations:,}")
         health[2].metric("Missing closes removed", q.missing_close_rows)
         health[3].metric("Duplicate timestamps", q.duplicate_timestamps)
         health[4].metric("Gap-flagged returns", q.gap_flagged_returns)
         health[5].metric("Missing closes remaining", 0)
-        if q.duplicate_timestamps == 0:
-            st.success("Validated series · no duplicate timestamps or missing closes remain.")
-        else:
-            st.warning(f"{q.duplicate_timestamps} duplicate timestamps need review.")
-        if q.gap_flagged_returns:
-            st.info(
-                f"{q.gap_flagged_returns} returns span a longer-than-usual weekday gap; "
-                "these observations are retained and flagged."
+
+        good, attention = st.columns(2, gap="small")
+        with good:
+            good.markdown(
+                f"<div class='health-line'><span class='health-good'>GOOD</span>"
+                f"{q.duplicate_timestamps} duplicate timestamps · 0 missing closes remaining</div>",
+                unsafe_allow_html=True,
             )
-        if q.provisional_bar:
-            latest_status = "Excluded from returns" if q.provisional_bar_excluded else "Included in returns"
-            st.caption(f"Latest bar {q.provisional_bar} may be provisional · {latest_status}.")
-        else:
-            st.caption("Latest bar is not marked provisional.")
-        st.caption(q.quality_summary)
+        provisional_note = (
+            f"Latest bar {q.provisional_bar} may be provisional "
+            f"({'excluded from returns' if q.provisional_bar_excluded else 'included in returns'})"
+            if q.provisional_bar
+            else "No latest bar flagged as provisional"
+        )
+        has_attention = bool(q.gap_flagged_returns or q.provisional_bar)
+        attention_label = "ATTENTION" if has_attention else "CLEAR"
+        attention_class = "health-attention" if has_attention else "health-clear"
+        with attention:
+            attention.markdown(
+                f"<div class='health-line'><span class='{attention_class}'>{attention_label}</span>"
+                f"{q.gap_flagged_returns} gap-flagged returns · {html.escape(provisional_note)}</div>",
+                unsafe_allow_html=True,
+            )
+        st.caption("Gap-spanning returns are retained and flagged for review; they are not treated as missing observations.")
 
     st.markdown("#### What the data shows")
-    findings = factual_findings(stats, metrics)
-    finding_cols = st.columns(len(findings))
+    findings = insight_cards(stats, metrics)
+    finding_cols = st.columns(len(findings), gap="small")
     for column, finding in zip(finding_cols, findings):
         column.markdown(
-            f"<div style='height:112px;background:#111d30;border:1px solid #24344d;"
-            f"border-radius:12px;padding:14px;color:#dbe6f5'>{finding}</div>",
+            f"<div class='insight-card'><div class='insight-label'>{html.escape(finding.label)}</div>"
+            f"<div class='insight-value'>{html.escape(finding.value)}</div>"
+            f"<div class='insight-note'>{html.escape(finding.note)}</div></div>",
             unsafe_allow_html=True,
         )
-    st.caption(f"Version {__version__}")
 
 
 def main() -> None:
     """Render the market analytics dashboard."""
-    st.set_page_config(page_title="Volatility Analytics · Market Risk Engine", layout="wide")
+    st.set_page_config(page_title=f"{APP_TITLE} · Market Risk Engine", layout="wide")
     _apply_visual_style()
     try:
         settings = get_settings()

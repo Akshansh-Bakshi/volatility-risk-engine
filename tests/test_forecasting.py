@@ -559,6 +559,67 @@ class TestForecastIndex:
         assert isinstance(r.forecast_series().index, pd.DatetimeIndex)
 
 
+class TestIrregularTradingSessionForecasts:
+    """Forecast steps stay independent of weekends and exchange holidays."""
+
+    @staticmethod
+    def _series() -> pd.Series:
+        dates = pd.bdate_range("2021-01-04", periods=150, name="date")
+        holidays = pd.to_datetime(["2021-01-26", "2021-03-29", "2021-08-19"])
+        dates = dates[~dates.isin(holidays)]
+        values = 100.0 + np.arange(len(dates)) * 0.2 + np.sin(np.arange(len(dates)) / 5.0)
+        return pd.Series(values, index=dates, name="close")
+
+    @pytest.mark.parametrize("model_family", ["arima", "sarima", "holtwinters"])
+    def test_forecasts_align_to_held_out_irregular_sessions(self, model_family: str) -> None:
+        series = self._series()
+        assert series.index.freq is None
+        assert series.index.inferred_freq is None
+        train = series.iloc[:-20].copy()
+        actual = series.iloc[-20:].copy()
+        original_train = train.copy(deep=True)
+        original_actual = actual.copy(deep=True)
+
+        if model_family == "arima":
+            model = ARIMAForecaster(order=(1, 1, 0), ticker="TEST")
+        elif model_family == "sarima":
+            model = SARIMAForecaster(
+                order=(1, 1, 0), seasonal_order=(0, 0, 0, 0), ticker="TEST"
+            )
+        else:
+            model = HoltWintersForecaster(trend="add", seasonal=None, ticker="TEST")
+
+        model.fit(train)
+        result = model.forecast(len(actual), forecast_index=actual.index)
+        forecast = result.forecast_series()
+
+        assert result.n_forecast == len(actual)
+        assert len(result.forecast_values) == len(actual)
+        pd.testing.assert_index_equal(forecast.index, actual.index)
+        assert np.isfinite(forecast.to_numpy()).all()
+        assert result.train_start == train.index[0].date()
+        assert result.train_end == train.index[-1].date()
+        assert result.forecast_start == actual.index[0].date()
+        assert result.forecast_end == actual.index[-1].date()
+        pd.testing.assert_series_equal(train, original_train)
+        pd.testing.assert_series_equal(actual, original_actual)
+        pd.testing.assert_series_equal(model._train_series, original_train)
+
+    @pytest.mark.parametrize(
+        "model",
+        [
+            ARIMAForecaster(order=(1, 1, 0), ticker="TEST"),
+            SARIMAForecaster(order=(1, 1, 0), seasonal_order=(0, 0, 0, 0), ticker="TEST"),
+            HoltWintersForecaster(trend="add", seasonal=None, ticker="TEST"),
+        ],
+    )
+    def test_irregular_index_requires_explicit_result_dates(self, model) -> None:  # type: ignore[no-untyped-def]
+        series = self._series()
+        model.fit(series.iloc[:-20])
+        with pytest.raises(ForecastingDataError, match="forecast_index is required"):
+            model.forecast(20)
+
+
 # ===========================================================================
 # I  ForecastResult metadata
 # ===========================================================================

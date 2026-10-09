@@ -1,0 +1,75 @@
+{
+  "data_source": "yahoo_finance",
+  "ticker": "^NSEI",
+  "requested_start": "2005-01-01",
+  "requested_end": "2026-10-09",
+  "retrieved_at_utc": "2026-10-09T15:30:26.863103+00:00",
+  "adjusted_prices": true,
+  "actual_data_start": "2007-09-17",
+  "actual_data_end": "2026-10-09",
+  "observations": 4677,
+  "rows_dropped_by_loader": 31,
+  "split": {
+    "ticker": "^NSEI",
+    "series_description": "adjusted close price",
+    "frequency": "1d",
+    "train_start": "2007-09-17",
+    "train_end": "2026-07-15",
+    "n_train": 4617,
+    "test_start": "2026-07-16",
+    "test_end": "2026-10-09",
+    "n_test": 60,
+    "total_observations": 4677,
+    "split_method": "chronological \u2014 no random shuffling"
+  },
+  "test_actual_min": 22231.80078125,
+  "test_actual_zero_count": 0,
+  "test_actual_near_zero_count_abs_below_1e-12": 0,
+  "mape_definition": "Existing evaluation code excludes exact zero actuals; it has no near-zero cutoff.",
+  "fitting_and_leakage": "Each model fit used only split.train_series. Held-out data were passed only to evaluation; split.test_series.index was supplied only as forecast date labels.",
+  "split_no_leakage": true,
+  "models": [
+    {
+      "label": "ARIMA(1,1,0)",
+      "config": {
+        "order": [
+          1,
+          1,
+          0
+        ]
+      },
+      "captured_warnings": [],
+      "notes": []
+    },
+    {
+      "label": "SARIMA(1,1,0)(1,0,0,5)",
+      "config": {
+        "order": [
+          1,
+          1,
+          0
+        ],
+        "seasonal_order": [
+          1,
+          0,
+          0,
+          5
+        ]
+      },
+      "captured_warnings": [],
+      "notes": []
+    },
+    {
+      "label": "Holt-Winters additive trend, no seasonality",
+      "config": {
+        "trend": "add",
+        "damped_trend": false,
+        "seasonal": null,
+        "seasonal_periods": null
+      },
+      "captured_warnings": [],
+      "notes": []
+    }
+  ],
+  "external_warnings": []
+}
