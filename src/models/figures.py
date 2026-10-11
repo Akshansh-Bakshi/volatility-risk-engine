@@ -115,3 +115,42 @@ def plot_volatility_comparison(
     ax.legend(fontsize=8)
     ax.grid(True, alpha=0.3)
     return fig
+
+
+def plot_variance_forecasts(
+    forecasts: pd.DataFrame,
+    *,
+    figsize: tuple[float, float] = (14, 6),
+    title: str = "Out-of-sample variance forecasts",
+) -> "matplotlib.figure.Figure":  # type: ignore[name-defined]
+    """Plot one-step variance forecasts alongside squared-return proxies."""
+    import matplotlib.figure as _mfig
+
+    columns = {
+        "realised_squared_return_pct2": "Squared-return proxy",
+        "garch_variance_pct2": "GARCH(1,1)",
+        "egarch_variance_pct2": "EGARCH(1,1,1)",
+        "rolling_variance_pct2": "20-session rolling variance",
+    }
+    missing = [name for name in columns if name not in forecasts.columns]
+    if missing:
+        raise ValueError(f"Forecast frame is missing required column(s): {', '.join(missing)}.")
+    if forecasts.empty:
+        raise ValueError("Forecast frame must contain at least one observation.")
+
+    fig = _mfig.Figure(figsize=figsize, tight_layout=True)
+    ax = fig.add_subplot(1, 1, 1)
+    styles = {
+        "realised_squared_return_pct2": {"color": "#777777", "alpha": 0.55, "linewidth": 0.9},
+        "garch_variance_pct2": {"color": "#1f77b4", "linewidth": 1.5},
+        "egarch_variance_pct2": {"color": "#d62728", "linewidth": 1.5},
+        "rolling_variance_pct2": {"color": "#2ca02c", "linewidth": 1.3},
+    }
+    for column, label in columns.items():
+        ax.plot(forecasts.index, forecasts[column], label=label, **styles[column])
+    ax.set_xlabel("Return date")
+    ax.set_ylabel("Daily variance (%²)")
+    ax.set_title(title)
+    ax.legend(fontsize=9, ncol=2)
+    ax.grid(True, alpha=0.3)
+    return fig

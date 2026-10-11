@@ -3,10 +3,14 @@
 from __future__ import annotations
 
 import html
+import json
 import logging
 from dataclasses import dataclass
-from datetime import date
+from datetime import date, datetime, timedelta, timezone
+from pathlib import Path
+from typing import Any
 
+import numpy as np
 import pandas as pd
 import plotly.graph_objects as go
 import streamlit as st
@@ -19,6 +23,7 @@ from src.exceptions import ConfigurationError, DataError, PreprocessingError
 from src.logging_config import PACKAGE_LOGGER_NAME, configure_logging
 from src.preprocessing.returns import build_return_series
 from src.preprocessing.return_series import ReturnSeries
+from src.risk.figures import plot_var_forecasts
 from src.statistics.dashboard import calculate_dashboard_metrics, insight_cards
 from src.statistics.descriptive import ReturnStats, compute_return_stats
 from src.statistics.profile import DatasetProfile, build_dataset_profile
@@ -26,6 +31,8 @@ from src.statistics.profile import DatasetProfile, build_dataset_profile
 APP_TITLE = "Volatility Analytics"
 DEFAULT_SYNOPSIS_TICKER = "^NSEI"
 MIN_SYNOPSIS_OBSERVATIONS = 500
+VAR_RESULTS_DIR = Path(__file__).resolve().parent / "results" / "var_backtesting" / "nifty50"
+VAR_RESULTS_STALE_AFTER = timedelta(days=30)
 ASSET_PRESETS: dict[str, dict[str, str]] = {
     "India": {
         "NIFTY 50 (^NSEI)": "^NSEI",
@@ -54,6 +61,142 @@ class SynopsisData:
     returns: ReturnSeries
     profile: DatasetProfile
     stats: ReturnStats
+
+
+@dataclass(frozen=True)
+class VaRDashboardArtifacts:
+    """Validated saved Stage 10 results for presentation in the dashboard."""
+
+    forecasts: pd.DataFrame | None
+    summary: pd.DataFrame | None
+    metadata: dict[str, Any] | None
+    artifacts_saved_at: datetime | None
+    status: str
+    message: str
+
+    @property
+    def available(self) -> bool:
+        return self.forecasts is not None and self.summary is not None and self.metadata is not None
+
+
+VAR_FORECAST_COLUMNS = (
+    "realised_loss_pct",
+    "garch_var95_pct", "egarch_var95_pct", "historical_var95_pct",
+    "garch_var99_pct", "egarch_var99_pct", "historical_var99_pct",
+    "garch_breach95", "egarch_breach95", "historical_breach95",
+    "garch_breach99", "egarch_breach99", "historical_breach99",
+)
+VAR_SUMMARY_COLUMNS = (
+    "method", "confidence", "breach_count", "sample_size", "observed_breach_rate",
+    "expected_breach_rate", "kupiec_statistic", "kupiec_p_value",
+    "christoffersen_independence_statistic", "christoffersen_independence_p_value",
+    "conditional_coverage_statistic", "conditional_coverage_p_value",
+)
+VAR_METHODS = {
+    "GARCH Normal", "EGARCH Normal", "250-return historical simulation"
+}
+
+
+def load_var_dashboard_artifacts(
+    results_dir: Path | None = None,
+    *,
+    now: datetime | None = None,
+) -> VaRDashboardArtifacts:
+    """Read and validate saved Stage 10 files without fitting or scoring models."""
+    directory = VAR_RESULTS_DIR if results_dir is None else Path(results_dir)
+    forecast_path = directory / "daily_var_forecasts.csv"
+    summary_path = directory / "backtest_summary.csv"
+    metadata_path = directory / "metadata.json"
+    missing = [path.name for path in (forecast_path, summary_path, metadata_path) if not path.is_file()]
+    if missing:
+        return VaRDashboardArtifacts(
+            None, None, None, None, "missing",
+            "Saved Stage 10 results are unavailable (missing " + ", ".join(missing) + ").",
+        )
+
+    try:
+        metadata = json.loads(metadata_path.read_text(encoding="utf-8"))
+        forecasts = pd.read_csv(forecast_path, parse_dates=["date"], index_col="date")
+        summary = pd.read_csv(summary_path)
+        if not isinstance(metadata, dict):
+            raise ValueError("metadata must be a JSON object")
+        missing_forecast = sorted(set(VAR_FORECAST_COLUMNS) - set(forecasts.columns))
+        missing_summary = sorted(set(VAR_SUMMARY_COLUMNS) - set(summary.columns))
+        if missing_forecast or missing_summary:
+            details = []
+            if missing_forecast:
+                details.append("daily forecast columns: " + ", ".join(missing_forecast))
+            if missing_summary:
+                details.append("summary columns: " + ", ".join(missing_summary))
+            raise ValueError("incomplete results (" + "; ".join(details) + ")")
+
+        if (
+            not isinstance(forecasts.index, pd.DatetimeIndex)
+            or forecasts.empty
+            or forecasts.index.hasnans
+            or forecasts.index.has_duplicates
+            or not forecasts.index.is_monotonic_increasing
+        ):
+            raise ValueError("forecast dates must be present, unique, and chronological")
+        expected_n = int(metadata["evaluation"]["observations"])
+        if expected_n != 252 or len(forecasts) != expected_n:
+            raise ValueError("the Stage 10 evaluation must contain 252 forecast rows")
+        if forecasts.index[0].date().isoformat() != metadata["evaluation"]["start"]:
+            raise ValueError("forecast dates do not match the recorded evaluation start")
+        if forecasts.index[-1].date().isoformat() != metadata["evaluation"]["end"]:
+            raise ValueError("forecast dates do not match the recorded evaluation end")
+        if metadata["data"]["ticker"] != "^NSEI":
+            raise ValueError("saved risk artifacts are not for the expected NIFTY 50 ticker")
+
+        numeric_forecast_columns = [column for column in VAR_FORECAST_COLUMNS if "breach" not in column]
+        for column in numeric_forecast_columns:
+            forecasts[column] = pd.to_numeric(forecasts[column], errors="coerce")
+            if not np.isfinite(forecasts[column].to_numpy(dtype="float64")).all():
+                raise ValueError(f"forecast column {column!r} contains incomplete values")
+        for column in (column for column in VAR_FORECAST_COLUMNS if "breach" in column):
+            normalized = forecasts[column].astype(str).str.strip().str.lower()
+            if not normalized.isin({"true", "false", "1", "0"}).all():
+                raise ValueError(f"breach column {column!r} contains invalid values")
+            forecasts[column] = normalized.isin({"true", "1"})
+
+        summary_confidence = pd.to_numeric(summary["confidence"], errors="coerce").round(2)
+        expected_pairs = {
+            (method, confidence)
+            for method in VAR_METHODS
+            for confidence in (0.95, 0.99)
+        }
+        actual_pairs = set(zip(summary["method"], summary_confidence, strict=True))
+        if len(summary) != 6 or actual_pairs != expected_pairs:
+            raise ValueError("backtest summary must contain 95% and 99% results for all three methods")
+        if set(pd.to_numeric(summary["sample_size"], errors="coerce")) != {252}:
+            raise ValueError("summary sample sizes do not match the 252-observation evaluation")
+        for column in VAR_SUMMARY_COLUMNS[1:]:
+            summary[column] = pd.to_numeric(summary[column], errors="coerce")
+            if not np.isfinite(summary[column].to_numpy(dtype="float64")).all():
+                raise ValueError(f"summary column {column!r} contains incomplete values")
+
+        retrieval_time = pd.Timestamp(metadata["data"]["data_fetched_at_utc"]).to_pydatetime()
+        if retrieval_time.tzinfo is None:
+            raise ValueError("data retrieval timestamp must include a timezone")
+        saved_at = datetime.fromtimestamp(metadata_path.stat().st_mtime, tz=timezone.utc)
+        current = now or datetime.now(timezone.utc)
+        if current.tzinfo is None:
+            raise ValueError("now must be timezone-aware")
+        if (current - retrieval_time).total_seconds() > VAR_RESULTS_STALE_AFTER.total_seconds() or (
+            current - saved_at
+        ).total_seconds() > VAR_RESULTS_STALE_AFTER.total_seconds():
+            return VaRDashboardArtifacts(
+                forecasts, summary, metadata, saved_at, "stale",
+                "These saved risk results are older than 30 days; rerun the Stage 10 experiment to refresh them.",
+            )
+        return VaRDashboardArtifacts(
+            forecasts, summary, metadata, saved_at, "ready", "Saved Stage 10 results loaded."
+        )
+    except (OSError, ValueError, TypeError, KeyError, json.JSONDecodeError, pd.errors.ParserError) as exc:
+        return VaRDashboardArtifacts(
+            None, None, None, None, "incomplete",
+            f"Saved Stage 10 results could not be displayed because they are incomplete or invalid ({exc}).",
+        )
 
 
 def resolve_ticker(selection: str, *, custom_ticker: str = "") -> str:
@@ -265,6 +408,87 @@ def _chart_layout(fig: go.Figure, title: str, y_title: str, *, height: int) -> g
     return fig
 
 
+def _render_risk_backtesting(selected_ticker: str) -> None:
+    """Present saved NIFTY 50 VaR artifacts; this view never runs model fits."""
+    artifacts = load_var_dashboard_artifacts()
+    if not artifacts.available:
+        if artifacts.status == "missing":
+            st.info(artifacts.message)
+        else:
+            st.warning(artifacts.message)
+        st.caption("Risk forecasts and tests are generated by the separate Stage 10 experiment.")
+        return
+
+    assert artifacts.forecasts is not None
+    assert artifacts.summary is not None
+    assert artifacts.metadata is not None
+    metadata = artifacts.metadata
+    evaluation = metadata["evaluation"]
+    fetched_at = pd.Timestamp(metadata["data"]["data_fetched_at_utc"])
+    st.markdown("#### Saved NIFTY 50 risk evaluation")
+    if artifacts.status == "stale":
+        st.warning(artifacts.message)
+    st.caption(
+        f"Data retrieved {fetched_at:%d %b %Y, %H:%M UTC} · "
+        f"evaluation {evaluation['start']} to {evaluation['end']} "
+        f"({evaluation['observations']} observations) · "
+        f"evaluation artifacts saved {artifacts.artifacts_saved_at:%d %b %Y, %H:%M UTC}"
+    )
+    if selected_ticker != "^NSEI":
+        st.info(
+            "The risk results below are for NIFTY 50 (^NSEI); the selected exploratory asset is "
+            f"{html.escape(selected_ticker)}."
+        )
+
+    st.markdown(
+        "One-day VaR is shown as a positive loss threshold. A breach occurs when the realised loss "
+        "is greater than that threshold. The lines compare realised losses with 95% and 99% VaR; "
+        "crosses mark breach dates."
+    )
+    figure = plot_var_forecasts(
+        artifacts.forecasts,
+        title=f"NIFTY 50 realised losses and VaR · {evaluation['start']} to {evaluation['end']}",
+    )
+    st.pyplot(figure, clear_figure=True, use_container_width=True)
+
+    st.markdown("#### Backtest comparison")
+    display = artifacts.summary.loc[:, [
+        "method", "confidence", "breach_count", "observed_breach_rate", "expected_breach_rate",
+        "kupiec_statistic", "kupiec_p_value",
+        "christoffersen_independence_statistic", "christoffersen_independence_p_value",
+        "conditional_coverage_statistic", "conditional_coverage_p_value",
+    ]].rename(columns={
+        "method": "Method",
+        "confidence": "Confidence",
+        "breach_count": "Breaches",
+        "observed_breach_rate": "Observed rate",
+        "expected_breach_rate": "Expected rate",
+        "kupiec_statistic": "Kupiec LR",
+        "kupiec_p_value": "Kupiec p",
+        "christoffersen_independence_statistic": "Independence LR",
+        "christoffersen_independence_p_value": "Independence p",
+        "conditional_coverage_statistic": "Conditional coverage LR",
+        "conditional_coverage_p_value": "Conditional coverage p",
+    }).copy()
+    display["Confidence"] = display["Confidence"].map(lambda value: f"{value:.0%}")
+    display["Observed rate"] = display["Observed rate"].map(lambda value: f"{value:.2%}")
+    display["Expected rate"] = display["Expected rate"].map(lambda value: f"{value:.2%}")
+    for column in ("Kupiec LR", "Independence LR", "Conditional coverage LR"):
+        display[column] = display[column].map(lambda value: f"{value:.3f}")
+    for column in ("Kupiec p", "Independence p", "Conditional coverage p"):
+        display[column] = display[column].map(lambda value: f"{value:.4f}")
+    st.dataframe(display, hide_index=True, use_container_width=True)
+    st.caption(
+        "Kupiec tests unconditional breach frequency; Christoffersen independence tests breach clustering; "
+        "conditional coverage tests both. At α = 0.05, p < 0.05 rejects the stated null. "
+        "Failing to reject a null does not prove that a VaR method is valid."
+    )
+    st.warning(
+        "These results describe one historical 252-observation evaluation period and do not guarantee future risk performance. "
+        "At 99% confidence only about 2.52 breaches are expected in 252 observations, so backtests have limited statistical power."
+    )
+
+
 def _render_dashboard(data: SynopsisData) -> None:
     profile, stats = data.profile, data.stats
     metrics = calculate_dashboard_metrics(data.market_data, data.returns)
@@ -318,8 +542,8 @@ def _render_dashboard(data: SynopsisData) -> None:
         config={"displaylogo": False, "scrollZoom": True},
     )
 
-    behavior_tab, distribution_tab, profile_tab = st.tabs(
-        ["Market behaviour", "Returns & distribution", "Profile & data health"]
+    behavior_tab, distribution_tab, profile_tab, risk_tab = st.tabs(
+        ["Market behaviour", "Returns & distribution", "Profile & data health", "Risk & Backtesting"]
     )
     with behavior_tab:
         left, right = st.columns(2, gap="small")
@@ -378,6 +602,9 @@ def _render_dashboard(data: SynopsisData) -> None:
                 unsafe_allow_html=True,
             )
         st.caption("Gap-spanning returns are retained and flagged for review; they are not treated as missing observations.")
+
+    with risk_tab:
+        _render_risk_backtesting(ticker)
 
     st.markdown("#### What the data shows")
     findings = insight_cards(stats, metrics)

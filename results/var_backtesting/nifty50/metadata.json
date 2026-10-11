@@ -1,0 +1,115 @@
+{
+  "experiment": "Stage 10 one-day-ahead VaR forecasts and statistical backtesting",
+  "data": {
+    "source": "yahoo_finance",
+    "ticker": "^NSEI",
+    "requested_start": "2005-01-01",
+    "requested_end": "latest available",
+    "data_fetched_at_utc": "2026-10-09T17:16:56.712254+00:00",
+    "actual_price_start": "2007-09-17",
+    "actual_price_end": "2026-10-09",
+    "price_observations": 4677,
+    "ingestion_rows_dropped": 31,
+    "return_observations": 4675,
+    "return_start": "2007-09-18",
+    "return_end": "2026-10-08",
+    "preprocessing": {
+      "ticker": "^NSEI",
+      "frequency": "1d",
+      "price_basis": "adjusted",
+      "return_definition": "log: R_t = ln(P_t / P_(t-1))",
+      "stored_scale": "decimal",
+      "modeling_scale": "percent",
+      "price_observations": 4676,
+      "return_observations": 4675,
+      "first_price_date": "2007-09-17",
+      "first_return_date": "2007-09-18",
+      "last_return_date": "2026-10-08",
+      "flagged_gaps": 47,
+      "gap_tolerance_weekdays": 1,
+      "ingestion_rows_dropped": 31,
+      "excluded_observations": 1,
+      "provisional_bar": "2026-10-09",
+      "provisional_bar_excluded": true,
+      "last_return_is_provisional": false,
+      "source": "yahoo_finance",
+      "fetched_at": "2026-10-09T17:16:56.712254+00:00",
+      "include_provisional_bar": false,
+      "max_gap_weekdays": 1,
+      "gap_spanning_returns_retained": true,
+      "evaluation_gap_flagged_observations": 1,
+      "evaluation_observations_with_provisional_bar": 0
+    }
+  },
+  "evaluation": {
+    "source_of_dates": "results\\volatility_forecasting\\nifty50\\daily_forecasts.csv",
+    "start": "2025-09-30",
+    "end": "2026-10-08",
+    "observations": 252,
+    "design": "Expanding-window walk-forward; each model refit uses returns strictly before the forecast date.",
+    "first_origin_training_start": "2007-09-18",
+    "first_origin_training_end": "2025-09-29",
+    "first_origin_training_observations": 4423,
+    "last_origin_training_end": "2026-10-07",
+    "model_fit_and_selection_data": "Prior returns only. No parameter selection or tuning on evaluation returns.",
+    "historical_simulation_window": 250,
+    "historical_simulation_alignment": "Previous 250 valid returns; excludes the target return.",
+    "historical_simulation_quantile": "numpy linear quantile at probability 1-confidence",
+    "confidence_levels": [
+      0.95,
+      0.99
+    ],
+    "significance_level": 0.05,
+    "return_scale": "percent log-return points",
+    "variance_scale": "percent^2",
+    "loss_convention": "Realised loss = -realised return; VaR thresholds are positive losses.",
+    "parametric_var_formula": "VaR_c = -(mu_hat + Phi^-1(1-c) * sqrt(h_hat)); Normal innovations.",
+    "breach_rule": "realised loss > VaR threshold",
+    "backtests": {
+      "kupiec_pof": "LR_uc = -2 log(L(p0)/L(phat)); chi-square(1); H0 unconditional breach probability = 1-confidence.",
+      "christoffersen_independence": "LR_ind = -2 log(L(iid)/L(first-order Markov)); chi-square(1); H0 breach indicators are first-order independent.",
+      "christoffersen_conditional_coverage": "LR_cc = LR_uc + LR_ind; chi-square(2); joint H0 of correct unconditional coverage and independence."
+    },
+    "limitations": [
+      "Squared daily returns are a noisy one-observation proxy for latent conditional variance.",
+      "A single 252-session evaluation window does not establish universal superiority of any method.",
+      "At 99% confidence only 2.52 breaches are expected in 252 observations, so coverage tests have low power and discrete outcomes."
+    ]
+  },
+  "methods": {
+    "garch_normal": {
+      "configuration": {
+        "p": 1,
+        "q": 1,
+        "mean": "Constant",
+        "dist": "Normal"
+      },
+      "distribution": "Normal",
+      "mean": "forecast mean from fitted model"
+    },
+    "egarch_normal": {
+      "configuration": {
+        "p": 1,
+        "o": 1,
+        "q": 1,
+        "mean": "Constant",
+        "dist": "Normal"
+      },
+      "distribution": "Normal",
+      "mean": "forecast mean from fitted model"
+    },
+    "historical_simulation": {
+      "window": 250,
+      "quantile_method": "linear",
+      "refit_frequency": "each observation; prior window only"
+    }
+  },
+  "model_status": {
+    "garch_convergence_failures": 0,
+    "egarch_convergence_failures": 0,
+    "garch_warnings_or_notes": [],
+    "egarch_warnings_or_notes": [],
+    "excluded_evaluation_observations": 0
+  },
+  "duration_seconds": 16.65006490000087
+}

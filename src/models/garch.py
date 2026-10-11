@@ -47,6 +47,7 @@ from __future__ import annotations
 
 import logging
 import warnings
+from datetime import date
 from typing import Any
 
 import numpy as np
@@ -57,7 +58,8 @@ from src.exceptions import (
     VolatilityModelDataError,
     VolatilityModelFitError,
 )
-from src.models.result import ModelFitResult, _TRADING_DAYS_PER_YEAR
+from src.models._forecast import make_one_step_forecast
+from src.models.result import ModelFitResult, VarianceForecast, _TRADING_DAYS_PER_YEAR
 from src.preprocessing.return_series import MODELING_SCALE, ReturnSeries
 from src.logging_config import PACKAGE_LOGGER_NAME
 
@@ -101,6 +103,8 @@ class GARCHModel:
         self._dist = dist
         self._ticker = ticker
         self._ann = annualization_factor
+        self._arch_result: Any = None
+        self._fit_result: ModelFitResult | None = None
 
     @property
     def model_name(self) -> str:
@@ -138,6 +142,8 @@ class GARCHModel:
             VolatilityModelFitError: If ``arch`` fails to converge or produces
                 non-finite outputs.
         """
+        self._arch_result = None
+        self._fit_result = None
         _validate_return_series(returns, _MIN_OBSERVATIONS)
         pct = returns.percent  # percent-scale: unit travels with the series name
 
@@ -204,7 +210,7 @@ class GARCHModel:
             self.model_name, self._ticker, len(pct), converged, res.aic, res.bic,
         )
 
-        return ModelFitResult(
+        fit_result = ModelFitResult(
             model_name=self.model_name,
             model_type="garch",
             config=self.config,
@@ -226,6 +232,23 @@ class GARCHModel:
             std_residuals=std_resid,
             notes=tuple(notes),
         )
+        self._arch_result = res
+        self._fit_result = fit_result
+        return fit_result
+
+    def forecast_one_step(self, forecast_date: date) -> VarianceForecast:
+        """Return a genuine one-step-ahead conditional variance forecast.
+
+        Fit the model first. ``forecast_date`` labels the next observation only;
+        it is not used to fit the model or generate the numeric forecast.
+        Variance is in percent-squared units because fitting uses
+        :attr:`ReturnSeries.percent`.
+        """
+        if self._arch_result is None or self._fit_result is None:
+            raise VolatilityModelFitError(
+                f"{self.model_name} has not been fitted yet. Call .fit() first."
+            )
+        return make_one_step_forecast(self._arch_result, self._fit_result, forecast_date)
 
 
 # ---------------------------------------------------------------------------

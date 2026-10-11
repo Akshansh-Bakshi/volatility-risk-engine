@@ -1,0 +1,86 @@
+{
+  "experiment": "Stage 9 expanding-window one-step-ahead volatility forecasting",
+  "data_source": "yahoo_finance",
+  "ticker": "^NSEI",
+  "requested_start": "2005-01-01",
+  "requested_end": "latest available",
+  "data_fetched_at_utc": "2026-10-09T17:16:56.712254+00:00",
+  "actual_price_start": "2007-09-17",
+  "actual_price_end": "2026-10-09",
+  "price_observations": 4677,
+  "ingestion_rows_dropped": 31,
+  "preprocessing": {
+    "ticker": "^NSEI",
+    "frequency": "1d",
+    "price_basis": "adjusted",
+    "return_definition": "log: R_t = ln(P_t / P_(t-1))",
+    "stored_scale": "decimal",
+    "modeling_scale": "percent",
+    "price_observations": 4676,
+    "return_observations": 4675,
+    "first_price_date": "2007-09-17",
+    "first_return_date": "2007-09-18",
+    "last_return_date": "2026-10-08",
+    "flagged_gaps": 47,
+    "gap_tolerance_weekdays": 1,
+    "ingestion_rows_dropped": 31,
+    "excluded_observations": 1,
+    "provisional_bar": "2026-10-09",
+    "provisional_bar_excluded": true,
+    "last_return_is_provisional": false,
+    "source": "yahoo_finance",
+    "fetched_at": "2026-10-09T17:16:56.712254+00:00",
+    "include_provisional_bar": false,
+    "max_gap_weekdays": 1,
+    "gap_spanning_returns_retained": true,
+    "gap_flagged_evaluation_returns": 1
+  },
+  "evaluation": {
+    "start": "2025-09-30",
+    "end": "2026-10-08",
+    "observations": 252,
+    "first_origin_training_start": "2007-09-18",
+    "first_origin_training_end": "2025-09-29",
+    "first_origin_training_observations": 4423,
+    "design": "expanding window; fit through prior return, forecast next return once",
+    "realised_variance_proxy": "squared daily log return",
+    "return_scale": "percent",
+    "variance_scale": "percent^2",
+    "qlike_formula": "mean(log(h_t) + RV_t / h_t)",
+    "mae_formula": "mean(abs(h_t - RV_t))",
+    "rmse_formula": "sqrt(mean((h_t - RV_t)^2))",
+    "rolling_benchmark": {
+      "window": 20,
+      "alignment": "sample variance (ddof=1) of the 20 returns before the forecast date"
+    },
+    "realised_squared_return_zero_count": 0,
+    "limitations": [
+      "A squared daily return is a noisy single-observation proxy for latent conditional variance.",
+      "This is one historical evaluation window and does not establish universal model superiority."
+    ]
+  },
+  "models": {
+    "garch": {
+      "configuration": {
+        "p": 1,
+        "q": 1,
+        "mean": "Constant",
+        "dist": "Normal"
+      },
+      "convergence_failures": 0,
+      "notes": []
+    },
+    "egarch": {
+      "configuration": {
+        "p": 1,
+        "o": 1,
+        "q": 1,
+        "mean": "Constant",
+        "dist": "Normal"
+      },
+      "convergence_failures": 0,
+      "notes": []
+    }
+  },
+  "duration_seconds": 20.094817299999704
+}

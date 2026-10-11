@@ -158,3 +158,46 @@ class ModelFitResult:
     def to_json(self, *, indent: int = 2) -> str:
         """Serialise to a JSON string."""
         return json.dumps(self.to_dict(), indent=indent)
+
+
+@dataclass(frozen=True)
+class VarianceForecast:
+    """Auditable one-step-ahead conditional variance forecast.
+
+    ``forecast_variance`` is expressed in squared units of ``return_scale``.
+    For the existing models this is percentage-squared (percent²).
+    """
+
+    model_name: str
+    model_type: str
+    config: dict[str, Any]
+    ticker: str
+    return_scale: str
+    variance_scale: str
+    fit_start: date
+    fit_end: date
+    n_train: int
+    forecast_date: date
+    forecast_variance: float
+    converged: bool
+    notes: tuple[str, ...] = field(default_factory=tuple)
+    # Appended with a default to preserve the existing constructor contract.
+    forecast_mean: float = 0.0
+
+    def to_dict(self) -> dict[str, Any]:
+        return {
+            "model_name": self.model_name,
+            "model_type": self.model_type,
+            "config": self.config,
+            "ticker": self.ticker,
+            "return_scale": self.return_scale,
+            "variance_scale": self.variance_scale,
+            "fit_start": self.fit_start.isoformat(),
+            "fit_end": self.fit_end.isoformat(),
+            "n_train": self.n_train,
+            "forecast_date": self.forecast_date.isoformat(),
+            "forecast_mean": self.forecast_mean,
+            "forecast_variance": self.forecast_variance,
+            "converged": self.converged,
+            "notes": list(self.notes),
+        }

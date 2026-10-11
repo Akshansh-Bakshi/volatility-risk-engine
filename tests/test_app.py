@@ -2,13 +2,16 @@
 
 from __future__ import annotations
 
+import json
 from pathlib import Path
-from datetime import date
+from datetime import date, datetime, timezone
 
+import pandas as pd
 import pytest
 from streamlit.testing.v1 import AppTest
 
-from app import _price_unit, load_synopsis_data, resolve_ticker
+import app
+from app import _price_unit, load_synopsis_data, load_var_dashboard_artifacts, resolve_ticker
 from tests.data_fakes import make_market_data, make_prices
 
 APP_PATH = Path(__file__).resolve().parents[1] / "app.py"
@@ -90,3 +93,140 @@ def test_asset_price_units_are_correct_for_indices_and_equities() -> None:
     assert _price_unit("^NSEI") == "index points"
     assert _price_unit("RELIANCE.NS") == "₹"
     assert _price_unit("AAPL") == "$"
+
+
+def _write_var_artifacts(directory: Path) -> None:
+    directory.mkdir(parents=True, exist_ok=True)
+    index = pd.bdate_range("2025-09-30", periods=252, name="date")
+    forecasts = pd.DataFrame({"realised_loss_pct": [0.5] * 252}, index=index)
+    for prefix, threshold95, threshold99 in (
+        ("garch", 1.0, 1.8),
+        ("egarch", 1.1, 1.9),
+        ("historical", 1.2, 2.0),
+    ):
+        forecasts[f"{prefix}_var95_pct"] = threshold95
+        forecasts[f"{prefix}_var99_pct"] = threshold99
+        forecasts[f"{prefix}_breach95"] = False
+        forecasts[f"{prefix}_breach99"] = False
+    forecasts.to_csv(directory / "daily_var_forecasts.csv", index_label="date")
+
+    methods = ["GARCH Normal", "EGARCH Normal", "250-return historical simulation"]
+    summary = pd.DataFrame([
+        {
+            "method": method,
+            "confidence": confidence,
+            "breach_count": 5,
+            "sample_size": 252,
+            "observed_breach_rate": 5 / 252,
+            "expected_breach_rate": 1 - confidence,
+            "kupiec_statistic": 0.1,
+            "kupiec_p_value": 0.75,
+            "christoffersen_independence_statistic": 0.2,
+            "christoffersen_independence_p_value": 0.65,
+            "conditional_coverage_statistic": 0.3,
+            "conditional_coverage_p_value": 0.85,
+        }
+        for confidence in (0.95, 0.99)
+        for method in methods
+    ])
+    summary.to_csv(directory / "backtest_summary.csv", index=False)
+
+    metadata = {
+        "data": {
+            "ticker": "^NSEI",
+            "data_fetched_at_utc": datetime.now(timezone.utc).isoformat(),
+        },
+        "evaluation": {
+            "start": index[0].date().isoformat(),
+            "end": index[-1].date().isoformat(),
+            "observations": 252,
+        },
+    }
+    (directory / "metadata.json").write_text(json.dumps(metadata), encoding="utf-8")
+
+
+def test_var_artifact_loader_reads_complete_stage10_results(tmp_path: Path) -> None:
+    _write_var_artifacts(tmp_path)
+
+    result = load_var_dashboard_artifacts(tmp_path)
+
+    assert result.available
+    assert result.status == "ready"
+    assert len(result.forecasts) == 252
+    assert len(result.summary) == 6
+    assert result.metadata["data"]["ticker"] == "^NSEI"
+    assert result.artifacts_saved_at is not None
+
+
+def test_var_artifact_loader_handles_missing_and_incomplete_files(tmp_path: Path) -> None:
+    missing = load_var_dashboard_artifacts(tmp_path)
+    assert not missing.available
+    assert missing.status == "missing"
+    assert "unavailable" in missing.message
+
+    _write_var_artifacts(tmp_path)
+    forecasts = pd.read_csv(tmp_path / "daily_var_forecasts.csv").drop(columns="garch_var95_pct")
+    forecasts.to_csv(tmp_path / "daily_var_forecasts.csv", index=False)
+    incomplete = load_var_dashboard_artifacts(tmp_path)
+    assert not incomplete.available
+    assert incomplete.status == "incomplete"
+    assert "incomplete or invalid" in incomplete.message
+
+
+def test_var_artifact_loader_marks_old_retrieval_as_stale(tmp_path: Path) -> None:
+    _write_var_artifacts(tmp_path)
+    metadata_path = tmp_path / "metadata.json"
+    metadata = json.loads(metadata_path.read_text(encoding="utf-8"))
+    metadata["data"]["data_fetched_at_utc"] = "2025-01-01T00:00:00+00:00"
+    metadata_path.write_text(json.dumps(metadata), encoding="utf-8")
+
+    result = load_var_dashboard_artifacts(tmp_path)
+
+    assert result.available
+    assert result.status == "stale"
+    assert "older than 30 days" in result.message
+
+
+def test_risk_tab_renders_saved_metrics_and_scope_note(tmp_path: Path) -> None:
+    _write_var_artifacts(tmp_path)
+    script = (
+        "import app\n"
+        "from pathlib import Path\n"
+        f"app.VAR_RESULTS_DIR = Path({str(tmp_path)!r})\n"
+        "app._render_risk_backtesting('AAPL')\n"
+    )
+    at = AppTest.from_string(script, default_timeout=30).run()
+
+    assert not at.exception
+    assert len(at.dataframe) == 1
+    table = at.dataframe[0].value
+    assert "Kupiec LR" in table.columns and "Kupiec p" in table.columns
+    assert "Independence LR" in table.columns and "Independence p" in table.columns
+    assert "Conditional coverage LR" in table.columns
+    assert "Conditional coverage p" in table.columns
+    assert table.loc[0, "Method"] == "GARCH Normal"
+    assert table.loc[0, "Breaches"] == 5
+    visible = " ".join(
+        element.value
+        for group in (at.markdown, at.caption, at.info, at.warning, at.subheader)
+        for element in group
+    )
+    assert "Saved NIFTY 50 risk evaluation" in visible
+    assert "AAPL" in visible and "NIFTY 50 (^NSEI)" in visible
+    assert "252-observation evaluation period" in visible
+    assert "limited statistical power" in visible
+
+
+def test_risk_tab_renders_gracefully_when_artifacts_are_missing(tmp_path: Path) -> None:
+    script = (
+        "import app\n"
+        "from pathlib import Path\n"
+        f"app.VAR_RESULTS_DIR = Path({str(tmp_path)!r})\n"
+        "app._render_risk_backtesting('^NSEI')\n"
+    )
+    at = AppTest.from_string(script, default_timeout=30).run()
+
+    assert not at.exception
+    assert len(at.info) == 1
+    assert "Saved Stage 10 results are unavailable" in at.info[0].value
+    assert len(at.dataframe) == 0

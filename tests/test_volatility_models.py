@@ -37,6 +37,7 @@ from __future__ import annotations
 import json
 import math
 import sys
+from dataclasses import replace
 from datetime import date, datetime, timezone
 
 import matplotlib.figure
@@ -51,9 +52,18 @@ from src.exceptions import (
     VolatilityModelFitError,
 )
 from src.models.egarch import EGARCHModel
-from src.models.figures import plot_conditional_volatility, plot_volatility_comparison
+from src.models.figures import (
+    plot_conditional_volatility,
+    plot_variance_forecasts,
+    plot_volatility_comparison,
+)
 from src.models.garch import GARCHModel
-from src.models.result import ModelFitResult, _TRADING_DAYS_PER_YEAR
+from src.models.result import ModelFitResult, VarianceForecast, _TRADING_DAYS_PER_YEAR
+from src.models.walk_forward import (
+    evaluate_variance_forecasts,
+    run_expanding_volatility_forecast,
+    training_return_prefix,
+)
 from src.preprocessing.return_series import PriceBasis, ReturnSeries
 
 # ---------------------------------------------------------------------------
@@ -606,6 +616,17 @@ class TestDeterminism:
         r2 = EGARCHModel(ticker="SYN").fit(rs)
         assert r1.aic == pytest.approx(r2.aic, rel=1e-8)
 
+    def test_garch_one_step_forecast_is_deterministic(self) -> None:
+        rs = _rs_garch()
+        train = training_return_prefix(rs, 450)
+        target = rs.decimal.index[450].date()
+        forecasts = []
+        for _ in range(2):
+            model = GARCHModel(ticker="SYN")
+            model.fit(train)
+            forecasts.append(model.forecast_one_step(target).forecast_variance)
+        assert forecasts[0] == pytest.approx(forecasts[1], rel=1e-8)
+
 
 # ===========================================================================
 # R  No mutation of ReturnSeries
@@ -624,6 +645,104 @@ class TestNoMutation:
         original = rs.decimal.values.copy()
         EGARCHModel().fit(rs)
         np.testing.assert_array_equal(rs.decimal.values, original)
+
+    def test_forecast_and_walk_forward_do_not_mutate_returns(self) -> None:
+        rs = _rs_garch(90)
+        original_decimal = rs.decimal.copy(deep=True)
+        original_gaps = rs.spans_gap.copy(deep=True)
+        result = run_expanding_volatility_forecast(rs, evaluation_size=3, rolling_window=20)
+        assert len(result.forecasts) == 3
+        pd.testing.assert_series_equal(rs.decimal, original_decimal)
+        pd.testing.assert_series_equal(rs.spans_gap, original_gaps)
+
+
+# ===========================================================================
+# Stage 9  Genuine one-step-ahead volatility forecasting
+# ===========================================================================
+
+
+class TestOneStepVarianceForecast:
+    @pytest.mark.parametrize("family", ["garch", "egarch"])
+    def test_positive_finite_forecast_and_timestamp_alignment(self, family: str) -> None:
+        rs = _rs_garch(120)
+        target_index = rs.decimal.index[100:]
+        train = training_return_prefix(rs, 100)
+        model = GARCHModel(ticker="SYN") if family == "garch" else EGARCHModel(ticker="SYN")
+        fitted = model.fit(train)
+        forecast = model.forecast_one_step(target_index[0].date())
+
+        assert isinstance(fitted, ModelFitResult)
+        assert isinstance(forecast, VarianceForecast)
+        assert forecast.forecast_date == target_index[0].date()
+        assert forecast.fit_end < forecast.forecast_date
+        assert forecast.n_train == 100
+        assert forecast.return_scale == "percent"
+        assert forecast.variance_scale == "percent^2"
+        assert np.isfinite(forecast.forecast_variance)
+        assert forecast.forecast_variance > 0.0
+        assert forecast.to_dict()["forecast_date"] == target_index[0].date().isoformat()
+
+    def test_forecast_requires_prior_fit_and_future_date(self) -> None:
+        rs = _rs_garch(80)
+        model = GARCHModel(ticker="SYN")
+        with pytest.raises(VolatilityModelFitError, match="has not been fitted"):
+            model.forecast_one_step(rs.decimal.index[-1].date())
+        model.fit(training_return_prefix(rs, 60))
+        with pytest.raises(VolatilityModelDataError, match="strictly after"):
+            model.forecast_one_step(rs.decimal.index[59].date())
+
+
+class TestExpandingVolatilityWalkForward:
+    def test_ordering_alignment_gap_retention_and_rolling_benchmark(self) -> None:
+        rs = _rs_garch(90)
+        flags = rs.spans_gap.copy()
+        flags.iloc[-2] = True
+        rs = replace(rs, spans_gap=flags)
+        result = run_expanding_volatility_forecast(rs, evaluation_size=3, rolling_window=20)
+        frame = result.forecasts
+        assert result.evaluation_observations == 3
+        pd.testing.assert_index_equal(frame.index, rs.decimal.index[-3:])
+        assert frame.index.is_monotonic_increasing and frame.index.is_unique
+        assert frame["gap_flagged"].sum() == 1
+
+        percent = rs.percent
+        for row_number, (timestamp, row) in enumerate(frame.iterrows(), start=87):
+            assert row["garch_fit_end"] < timestamp
+            assert row["egarch_fit_end"] < timestamp
+            assert row["garch_n_train"] == row_number
+            assert row["egarch_n_train"] == row_number
+            expected = percent.iloc[row_number - 20:row_number].var(ddof=1)
+            assert row["rolling_variance_pct2"] == pytest.approx(expected)
+            assert row["realised_return_pct"] == pytest.approx(percent.iloc[row_number])
+            assert row["realised_squared_return_pct2"] == pytest.approx(percent.iloc[row_number] ** 2)
+        variance_columns = [
+            "garch_variance_pct2", "egarch_variance_pct2", "rolling_variance_pct2"
+        ]
+        assert np.isfinite(frame[variance_columns].to_numpy()).all()
+        assert (frame[variance_columns] > 0).all().all()
+
+    def test_variance_metric_formulas_and_units(self) -> None:
+        frame = pd.DataFrame({
+            "realised_squared_return_pct2": [1.0, 4.0],
+            "garch_variance_pct2": [1.0, 2.0],
+            "egarch_variance_pct2": [2.0, 4.0],
+            "rolling_variance_pct2": [0.5, 2.0],
+        })
+        metrics = evaluate_variance_forecasts(frame).set_index("model")
+        assert metrics.loc["GARCH(1,1)", "mae_pct2"] == pytest.approx(1.0)
+        assert metrics.loc["GARCH(1,1)", "rmse_pct2"] == pytest.approx(np.sqrt(2.0))
+        expected_qlike = np.mean(np.log([1.0, 2.0]) + np.array([1.0, 4.0]) / [1.0, 2.0])
+        assert metrics.loc["GARCH(1,1)", "qlike_mean_log_h_plus_rv_over_h"] == pytest.approx(expected_qlike)
+
+    def test_forecast_plot_returns_figure(self) -> None:
+        frame = pd.DataFrame({
+            "realised_squared_return_pct2": [1.0, 4.0],
+            "garch_variance_pct2": [1.0, 2.0],
+            "egarch_variance_pct2": [2.0, 4.0],
+            "rolling_variance_pct2": [0.5, 2.0],
+        }, index=pd.date_range("2024-01-01", periods=2, name="date"))
+        fig = plot_variance_forecasts(frame)
+        assert isinstance(fig, matplotlib.figure.Figure)
 
 
 # ===========================================================================
