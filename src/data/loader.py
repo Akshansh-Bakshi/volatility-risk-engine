@@ -26,7 +26,7 @@ from src.config import DEFAULT_CACHE_MAX_AGE_HOURS, DEFAULT_MIN_OBSERVATIONS
 from src.data.cache import MarketDataCache, is_entry_fresh
 from src.data.market_data import MarketData, MarketDataRequest
 from src.data.provider import MarketDataProvider
-from src.data.validation import validate_prices
+from src.data.validation import audit_price_quality, validate_prices
 from src.exceptions import DataError, DataFetchError
 from src.logging_config import PACKAGE_LOGGER_NAME
 
@@ -119,7 +119,9 @@ class MarketDataLoader:
 
         data = self._download(request)
         if self._cache is not None:
-            self._write_cache(self._cache, data)
+            data, write_status = self._write_cache(self._cache, data)
+            if write_status == "newer-cache-preserved":
+                status = write_status
         return data, status
 
     def _read_cache(
@@ -150,23 +152,58 @@ class MarketDataLoader:
                 exc,
             )
             return None, "invalid"
-        return replace(entry, prices=prices, from_cache=True), "hit"
+        cached = replace(entry, prices=prices, from_cache=True)
+        self._log_quality_warnings(cached)
+        return cached, "hit"
 
     def _download(self, request: MarketDataRequest) -> MarketData:
         raw = self._provider.fetch(request)
         prices, dropped_dates = validate_prices(
             raw, request, min_observations=self._min_observations
         )
-        return MarketData(
+        data = MarketData(
             request=request,
             prices=prices,
             source=self._provider.name,
             fetched_at=self._clock(),
             dropped_dates=dropped_dates,
         )
+        self._log_quality_warnings(data)
+        return data
 
-    @staticmethod
-    def _write_cache(cache: MarketDataCache, data: MarketData) -> None:
+    def _log_quality_warnings(self, data: MarketData) -> None:
+        for warning in audit_price_quality(data.prices, data.request, now=self._clock()):
+            logger.warning("Market data quality warning for %s: %s", data.ticker, warning)
+
+    def _write_cache(
+        self, cache: MarketDataCache, data: MarketData
+    ) -> tuple[MarketData, str]:
+        existing = cache.read(data.request)
+        if existing is not None:
+            try:
+                existing_prices, dropped = validate_prices(
+                    existing.prices, data.request, min_observations=self._min_observations
+                )
+            except DataError as exc:
+                logger.debug("Replacing invalid cache entry for %s: %s", data.ticker, exc)
+            else:
+                if existing.last_date > data.last_date or (
+                    existing.last_date == data.last_date and existing.fetched_at > data.fetched_at
+                ):
+                    reason = (
+                        f"Provider response ended {data.last_date.isoformat()} but the validated cache "
+                        f"ends {existing.last_date.isoformat()}; retained the newer cached dataset."
+                    )
+                    logger.warning("%s", reason)
+                    preserved = replace(
+                        existing,
+                        prices=existing_prices,
+                        dropped_dates=dropped,
+                        from_cache=True,
+                        fallback_reason=reason,
+                    )
+                    self._log_quality_warnings(preserved)
+                    return preserved, "newer-cache-preserved"
         try:
             cache.write(data)
         except OSError as exc:
@@ -176,3 +213,5 @@ class MarketDataLoader:
                 data.request.range_label,
                 exc,
             )
+            return data, "write-failed"
+        return data, "written"

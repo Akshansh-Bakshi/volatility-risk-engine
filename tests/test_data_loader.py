@@ -377,6 +377,27 @@ def test_a_cache_write_failure_does_not_lose_the_data(
     assert len(warnings) == 1 and "Could not write cache entry" in warnings[0].getMessage()
 
 
+def test_older_valid_provider_response_does_not_replace_newer_cache(tmp_path: Path) -> None:
+    cache = MarketDataCache(tmp_path / "cache")
+    initial_loader = MarketDataLoader(
+        StaticProvider(frame=STORED), cache=cache, min_observations=250, clock=Clock()
+    )
+    initial_loader.load(make_request())
+    old_response = STORED.iloc[:-5].copy()
+    refresh_clock = Clock(T0 + timedelta(hours=1))
+    refresh_loader = MarketDataLoader(
+        StaticProvider(frame=old_response), cache=cache, min_observations=250, clock=refresh_clock
+    )
+
+    returned = refresh_loader.load(make_request(), refresh=True)
+    stored = cache.read(make_request())
+
+    assert returned.from_cache is True
+    assert returned.last_date == STORED.index[-1].date()
+    assert returned.fallback_reason is not None and "retained the newer cached dataset" in returned.fallback_reason
+    assert stored is not None and stored.last_date == STORED.index[-1].date()
+
+
 # --- P. logging on success ------------------------------------------------------------------------
 
 

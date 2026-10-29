@@ -1,0 +1,70 @@
+{
+  "experiment": "Stage 13B historical and hypothetical portfolio stress scenarios",
+  "created_at_utc": "2026-10-24T05:06:45.199231+00:00",
+  "data": {
+    "source": "yahoo_finance",
+    "ticker": "^NSEI",
+    "requested_start": "2005-01-01",
+    "requested_end": "latest available",
+    "adjusted_prices": true,
+    "retrieved_at_utc": "2026-10-09T17:16:56.712254+00:00",
+    "cache_entry_used": true,
+    "actual_price_start": "2007-09-17",
+    "actual_price_end": "2026-10-09",
+    "price_observations": 4677,
+    "return_metadata": {
+      "ticker": "^NSEI",
+      "frequency": "1d",
+      "price_basis": "adjusted",
+      "return_definition": "log: R_t = ln(P_t / P_(t-1))",
+      "stored_scale": "decimal",
+      "modeling_scale": "percent",
+      "price_observations": 4676,
+      "return_observations": 4675,
+      "first_price_date": "2007-09-17",
+      "first_return_date": "2007-09-18",
+      "last_return_date": "2026-10-08",
+      "flagged_gaps": 47,
+      "gap_tolerance_weekdays": 1,
+      "ingestion_rows_dropped": 31,
+      "excluded_observations": 1,
+      "provisional_bar": "2026-10-09",
+      "provisional_bar_excluded": true,
+      "last_return_is_provisional": false,
+      "source": "yahoo_finance",
+      "fetched_at": "2026-10-09T17:16:56.712254+00:00"
+    }
+  },
+  "portfolio": {
+    "name": "^NSEI single-asset index proxy",
+    "starting_value": 1000000.0,
+    "currency": "INR",
+    "weights": {
+      "^NSEI": 1.0
+    },
+    "scope_note": "Only a single NIFTY 50 index holding is available; this is an index proxy, not a diversified portfolio.",
+    "assumptions": "Fully invested, long-only, buy-and-hold weights; no fees, cash flows, leverage, or rebalancing.",
+    "valuation_formula": "stressed_value = starting_value * sum(weight_i * (1 + simple_return_i)); loss = starting_value - stressed_value; asset contribution_i = -starting_value * weight_i * simple_return_i"
+  },
+  "historical_scenarios": {
+    "input": "decimal log returns from the existing ReturnSeries",
+    "horizons_sessions": [
+      1,
+      5
+    ],
+    "worst_scenarios_per_horizon": 5,
+    "window_policy": "all overlapping consecutive observation windows; retain the worst losses",
+    "compounding": "asset simple return = exp(sum(log returns)) - 1",
+    "gap_policy": "gap-spanning observations are included and flagged in each scenario row"
+  },
+  "hypothetical_scenarios": {
+    "shocks_simple_return": [
+      -0.05,
+      -0.1,
+      -0.2
+    ],
+    "scope": "portfolio-wide; the same shock is applied to every holding (currently one index proxy)",
+    "probability_claim": null
+  },
+  "duration_seconds": 9.101202099991497
+}

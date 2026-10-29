@@ -28,8 +28,16 @@ def create_market_data_loader(
     """
     config = (settings if settings is not None else get_settings()).data
     cache = MarketDataCache(config.data_dir / CACHE_SUBDIRECTORY) if config.use_cache else None
+    if provider is None:
+        # yfinance's internal SQLite DBs use the same configured data root as
+        # the project cache, rather than an implicit user-profile location.
+        provider = YahooFinanceProvider(
+            cache_directory=config.data_dir / "yfinance-cache",
+            timeout_seconds=config.provider_timeout_seconds,
+            retries=config.provider_retries,
+        )
     return MarketDataLoader(
-        provider if provider is not None else YahooFinanceProvider(),
+        provider,
         cache=cache,
         min_observations=config.min_observations,
         cache_max_age=timedelta(hours=config.cache_max_age_hours),

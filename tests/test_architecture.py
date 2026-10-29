@@ -30,6 +30,7 @@ LAYERS: tuple[frozenset[str], ...] = (
     frozenset({"forecasting"}),
     frozenset({"risk"}),
     frozenset({"backtesting"}),
+    frozenset({"evaluation"}),
 )
 LAYER_OF = {name: rank for rank, names in enumerate(LAYERS) for name in names}
 

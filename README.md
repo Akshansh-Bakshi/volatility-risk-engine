@@ -5,14 +5,14 @@ market data, model how volatility evolves, forecast future risk, translate those
 forecasts into Value-at-Risk (VaR), test them rigorously out of sample, and present
 the results in a professional Streamlit application.
 
-> **Status: stage 6 of the build: classical forecasting benchmarks complete.**
-> The system can obtain and cache daily price history, construct a validated log-return series,
-> run a full EDA pass (Stage 4) and five statistical diagnostic tests (Stage 5), and now fit
-> three classical time-series models — **ARIMA**, **SARIMA**, and **Holt-Winters** — on the
-> adjusted close-price series, generate out-of-sample forecasts from a chronological
-> train/test split, and produce audit-ready `ForecastResult` objects (frozen, JSON-serialisable).
-> It does **not** yet fit GARCH/EGARCH volatility models and computes no VaR or backtests.
-> The Streamlit app is still a shell. See [Current implementation status](#current-implementation-status).
+> **Verified capabilities:** validated daily market data and log returns, statistical diagnostics,
+> ARIMA/SARIMA/Holt-Winters forecasting, GARCH/EGARCH volatility forecasting, VaR backtesting,
+> and a Streamlit analytics dashboard. Stage 12A adds a reproducible XGBoost price-forecast
+> experiment with a chronological holdout, recursive multi-step predictions, shared metrics,
+> persisted artifacts, and a saved-results dashboard view. Stage 14 adds target-aware volatility
+> and VaR/ES scoring, prior-only volatility regimes, and matching dashboard diagnostics. Stage 15
+> adds bounded Yahoo retries, warning-only quality audits and shared market-data lineage. See
+> [Current implementation status](#current-implementation-status).
 
 ## Research problem
 
@@ -44,9 +44,10 @@ clean, leakage-free backtest rather than an in-sample fit.
 - **It is testable.** Risk forecasts make falsifiable predictions (exceedance
   frequency and independence) that can be evaluated statistically out of sample.
 
-This project therefore contains **no machine-learning price prediction**.
+The Stage 12A XGBoost experiment forecasts adjusted-close price levels to compare with the
+existing classical price models. These results are exploratory and are not risk forecasts.
 
-## Planned pipeline
+## Implemented pipeline and current experiment
 
 ```
 market data → returns → EDA / dataset profiling → statistical tests → volatility models
@@ -59,12 +60,14 @@ market data → returns → EDA / dataset profiling → statistical tests → vo
 | 2 — Market data | `src/data` | ✅ Done | Fetch, validate and cache raw price data from external sources |
 | 3 — Returns | `src/preprocessing` | ✅ Done | Clean prices; derive validated log-return series (`ReturnSeries`) |
 | 4 — EDA / Dataset profiling | `src/statistics` | ✅ Done | Dataset profile, descriptive statistics, reusable figures, synopsis snapshot |
-| 5 — Statistical tests | `src/statistics` | 🔲 Next | Stationarity, autocorrelation, ARCH-effect characterisation |
-| 6 — Volatility models | `src/models` | 🔲 Planned | Specify, estimate and select conditional volatility models |
-| 7 — Forecasting | `src/forecasting` | 🔲 Planned | Produce forecasts using only information available at the forecast origin |
-| 8 — VaR | `src/risk` | 🔲 Planned | Turn forecasts into risk measures at configurable confidence levels |
-| 9 — Backtesting | `src/backtesting` | 🔲 Planned | Rolling/expanding-window re-estimation and evaluation against realised outcomes |
-| 10 — Dashboard | `app.py` | 🔲 Planned | Streamlit interface over the completed pipeline |
+| 5 - Statistical tests | src/statistics | Implemented | Stationarity, autocorrelation, and ARCH-effect diagnostics |
+| 6 - Classical forecasting | src/forecasting | Implemented | ARIMA, SARIMA, Holt-Winters, and shared evaluation utilities |
+| 9 - Volatility forecasting | src/models | Implemented | Expanding-window GARCH/EGARCH forecasts |
+| 10 - VaR and backtesting | src/risk, src/backtesting | Implemented | VaR forecasts and statistical breach tests |
+| 11 - Dashboard | app.py | Implemented | Market synopsis, saved forecast, and risk views |
+| 12A - XGBoost | src/forecasting/xgboost.py | Implemented | Leakage-safe recursive price forecasts with classical baselines |
+| 13A-C - Risk monitoring and stress testing | src/risk/monitoring.py, src/risk/stress.py | Implemented | Trailing realised risk, historical VaR/ES, drawdown, and explicit stress scenarios |
+| 14 - Unified evaluation | src/evaluation | Implemented | Joint VaR/ES score, prior-only regime classification, and dashboard diagnostics across distinct target types |
 
 ## Current implementation status
 
@@ -74,18 +77,22 @@ market data → returns → EDA / dataset profiling → statistical tests → vo
 | Validated, environment-overridable configuration (`src/config.py`) | Implemented |
 | Logging (`src/logging_config.py`) and exception hierarchy (`src/exceptions.py`) | Implemented |
 | **Market data ingestion (`src/data`)**: provider contract, Yahoo Finance provider, validation, local cache, loader | **Implemented, verified offline** |
-| Live verification against real Yahoo Finance | Opt-in tests provided (`pytest -m live`); **not yet run against Yahoo** in the development environment because outbound access was blocked |
-| Streamlit entry point | Application shell only (shows the active configuration); no data or analytics pages |
+| Fresh Yahoo Finance retrieval | Unresolved; SQLite initialization now uses the configured data directory, but external Yahoo connectivity remains blocked in this environment |
+| Streamlit dashboard | Market synopsis, saved price and variance forecast diagnostics, VaR/backtesting, and historical VaR/ES scoring |
 | **Return construction (`src/preprocessing`)**: log returns, explicit decimal/percent scale, gap flags, provisional-bar policy, `ReturnSeries` | **Implemented, verified offline** |
-| **EDA / dataset profiling (`src/statistics`)**: `DatasetProfile`, `ReturnStats`, four reusable matplotlib figures, synopsis snapshot | **Implemented, verified offline (90 new tests, 525 total)** |
-| Statistical hypothesis tests (stationarity, autocorrelation, ARCH-effect) | Not started — Stage 5 |
-| Volatility models (GARCH family) | Not started |
-| Forecasting | Not started |
-| Value-at-Risk | Not started |
-| Backtesting | Not started |
-| Dashboard | Not started |
+| **EDA / dataset profiling (src/statistics)** | Implemented, verified offline |
+| Statistical hypothesis tests | Implemented in src/statistics/diagnostics.py |
+| Classical and XGBoost price forecasting | Implemented; Stage 12A uses a 60-observation chronological holdout |
+| Volatility models and VaR backtesting | Implemented in `src/models`, `src/risk`, and `src/backtesting` |
+| Dashboard | Implemented in `app.py`; experiment views load saved artifacts |
+| Rolling risk and stress tests | Implemented for the available NIFTY 50 history; default stress portfolio is a single-index proxy |
+| Unified evaluation | Separate price, variance, and loss-target scores; prior-only volatility regimes; FZ0 joint VaR/ES score |
+| Data ingestion reliability | Configurable timeout and bounded transient retries; atomic validated cache; fresh/cache/fallback lineage and fingerprints; warning-only stale/gap/large-move diagnostics |
+| Experiment artifact integrity | Related files are staged and published as complete bundles; dashboard validates schema, dates, row counts, freshness, and provenance |
 
-Nothing in the repository fits volatility models, generates forecasts or computes risk measures yet.
+Stage 12A forecasts price levels for comparison only; risk forecasts use the separate return-volatility and VaR pipeline.
+Stage 13 adds trailing historical monitoring and deterministic stress scenarios; it does not treat hypothetical shocks as forecasts or probabilities.
+Stage 14 keeps price RMSE/MAE, variance QLIKE/errors, and VaR/ES scores in separate target groups. Its regime label compares prior-only 20-session realised volatility with a prior 252-session expanding median; the one-session squared-return variance proxy remains noisy. The FZ0 score is applied to Stage 13 rolling historical VaR/ES forecasts. Dashboard rerenders read saved artifacts and do not fit models.
 
 ## Market data layer (`src/data`)
 
@@ -184,8 +191,9 @@ column definition; the opt-in live tests include a check against a real split.)
   instead of trimming it, which would also expose a `yfinance` change in end-date
   semantics.
 - A "latest" download made while a market is open may end with a *provisional*
-  current-session bar. The data layer delivers it as-is; the return-construction stage
-  decides what to do with it (see [Provisional latest bar](#provisional-latest-bar)).
+  current-session bar. The loader records it as delivered; return construction and
+  the Stage 12A price runner apply `VRE_INCLUDE_PROVISIONAL_BAR` before modelling
+  (see [Provisional latest bar](#provisional-latest-bar)).
   For reproducible research, pin `end_date` to a past date.
 
 ### Index and timezone convention
@@ -231,8 +239,11 @@ downwards. The consequence for return construction is that the return across a r
 row spans more than one session; the removed dates are recorded on `MarketData`, and the
 return-construction stage uses them to flag exactly those returns.
 
-Not validated on purpose: cross-field plausibility (for example `high >= low`) and outlier
-detection. Those judgements belong to later, explicitly configured stages.
+Non-positive OHLC prices and negative volume are rejected; missing non-close OHLC values remain
+permitted. Cross-field OHLC plausibility is not a hard rejection rule. Large daily close moves are
+warned about and retained; no crash or outlier is automatically removed.
+Weekday gaps are reported as candidates because holidays and missing sessions cannot be
+distinguished without an exchange calendar.
 
 `InvalidTickerError` is best-effort. `yfinance` reports a symbol whose timezone cannot be
 resolved as missing, and it uses the same signal when Yahoo cannot be reached, so the error
@@ -242,7 +253,8 @@ message says so. Blocked or failed HTTP requests can surface from `yfinance` as 
 ### Cache policy
 
 Downloads are cached as validated JSON under `<data_dir>/cache/market/` (default
-`data/cache/market/`, git-ignored). It is a local research cache, nothing more.
+`data/cache/market/`, git-ignored). yfinance's separate SQLite support cache is kept under
+`<data_dir>/yfinance-cache/`; both locations follow `VRE_DATA_DIR`.
 
 - **Identity and naming.** One file per request identity, named from ticker (percent-encoded),
   interval, start, end (or `latest`) and price basis, for example
@@ -258,8 +270,15 @@ Downloads are cached as validated JSON under `<data_dir>/cache/market/` (default
   `VRE_CACHE_MAX_AGE_HOURS` (default 6). Stale data therefore cannot pass as current, and
   `MarketData.fetched_at` / `from_cache` always show what you are looking at.
 - **Bypass and refresh.** `VRE_USE_CACHE=false` (or a loader built without a cache) never reads
-  or writes the cache; `loader.load(request, refresh=True)` skips the read and overwrites the entry.
+  or writes the JSON market-data cache; `loader.load(request, refresh=True)` skips the read.
+  A valid cache with a later last-observation date is preserved if a refresh returns older data.
 - A failed cache write is logged and does not fail the load. Files are written atomically.
+- For latest requests, data older than seven calendar days, weekday gaps spanning more than one
+  weekday, and absolute daily close changes of at least 20% produce warnings only. These checks
+  do not infer an exchange calendar or delete observations.
+- Every experiment runner records a shared lineage object with fresh/cached/fallback status,
+  retrieval time, actual observation range, logical cache key, SHA-256 data fingerprint, quality
+  warnings, and provisional-bar handling. Absolute local cache paths are not written to artifacts.
 
 ### Assets
 
@@ -280,8 +299,9 @@ Nothing in the API prevents adding them, and `MarketData` already carries the fu
 
 ### Known limitations
 
-Yahoo data is unofficial and can be revised or unavailable; there are no retries or fallback
-providers; one ticker per request; daily bars only; the latest bar can be provisional
+Yahoo data is unofficial and can be revised or unavailable; transient connectivity errors use a
+configurable, bounded retry count, and only Stage 13 has a validated local-cache fallback; one
+ticker per request; daily bars only; the latest bar can be provisional
 during a live session (handled downstream, see below).
 
 ## Return series (`src/preprocessing`)
@@ -644,11 +664,61 @@ Blank values are treated as unset. No secrets are required or stored.
 | `VRE_MIN_OBSERVATIONS` | `250` | Minimum usable price observations (integer, at least 2) for a download to be accepted |
 | `VRE_USE_CACHE` | `true` | `false` never reads or writes the on-disk cache |
 | `VRE_CACHE_MAX_AGE_HOURS` | `6` | How long a "latest" download counts as current (positive number of hours) |
+| `VRE_PROVIDER_TIMEOUT_SECONDS` | `15` | Per-request timeout passed to Yahoo Finance |
+| `VRE_PROVIDER_RETRIES` | `1` | Retries for transient connection, timeout, or JSON-response failures (integer 0–5) |
 | `VRE_INCLUDE_PROVISIONAL_BAR` | `false` | `true` keeps a latest bar that may still be forming; `false` excludes it |
 | `VRE_MAX_GAP_WEEKDAYS` | `1` | Consecutive skipped weekdays a return may span before it is flagged as spanning a gap (integer, at least 0) |
 | `VRE_MIN_RETURNS` | `250` | Minimum number of returns required to build a return series (integer, at least 2) |
 
 Invalid values fail fast with a `ConfigurationError` that names the offending setting.
+
+## Running the experiments
+
+Run from the repository root after installing `requirements.txt`. The Stage 10 runner
+uses the dates saved by Stage 9, so run those two in order. Stage 12A and Stage 13
+use the shared data loader independently. Runners write to the artifact locations
+below; each publishes a complete staged bundle and keeps unrelated existing files.
+
+```bash
+python -m scripts.run_stage9_volatility_forecast
+python -m scripts.run_stage10_var_backtesting
+python -m scripts.run_stage12a_xgboost
+python -m scripts.run_stage13_risk_monitoring
+```
+
+Stage 13 uses only its explicitly labelled identity-matched cached fallback when
+provider retrieval fails. Stages 9, 10, and 12A use a cache only while the shared
+loader considers it fresh; otherwise the runner reports the provider failure.
+`VRE_USE_CACHE=false` disables cache reads and writes. A cache-backed run is
+identified in each artifact's lineage and does not verify live Yahoo connectivity.
+
+| Experiment | Files |
+| --- | --- |
+| Stage 9 volatility forecasts | `results/volatility_forecasting/nifty50/` |
+| Stage 10 VaR backtest | `results/var_backtesting/nifty50/` |
+| Stage 12A price forecasts | `results/advanced_forecasting/nifty50/` |
+| Stage 13 rolling risk | `results/risk_monitoring/nifty50/` |
+| Stage 13 stress scenarios | `results/stress_testing/nifty50/` |
+| Stage 14 evaluation | Rendered from the validated Stage 9 and Stage 13 artifacts; no model-fitting runner |
+
+The dashboard reads saved artifacts and does not train models during rerenders:
+
+```bash
+streamlit run app.py
+```
+
+Artifact panels report missing or invalid outputs and mark results stale when either
+their data retrieval, artifact creation, or saved files are more than 30 days old.
+They continue to show structurally valid stale results with a visible warning so the
+evaluation period and retrieval time remain inspectable. Incompatible schemas and
+partial bundles are not displayed as valid results.
+
+The Stage 16 cached-data acceptance run used the local NIFTY 50 cache. Stages 9 and
+10 evaluated 252 sessions from 2025-09-30 through 2026-10-08; Stage 12A evaluated a
+60-session holdout from 2026-07-15 through 2026-10-08. Stage 13 generated 4,668
+monitoring rows and 13 stress scenarios using data through 2026-09-29. These are
+cached-data experiment results, not a live Yahoo verification or a claim of future
+model performance.
 
 ## Running the tests
 
@@ -661,14 +731,13 @@ The normal suite replaces the `yfinance` boundary with a fake that follows its d
 behaviour, so it runs offline. The `live` tests are deselected by default and fail (rather
 than skip) when Yahoo cannot be reached.
 
-## Launching the application
-
-```bash
-streamlit run app.py
-```
-
-At this stage the app is a shell that shows the active default configuration; the
-data and analytics pages arrive in later stages.
+Stage 16 verification ran on Python 3.10.0: **1,082 passed, 1 skipped, 5 deselected**.
+The skipped platform-specific logging test requires `time.tzset`, which Windows does
+not provide. The five deselected tests are the opt-in live Yahoo checks. The acceptance
+workflows listed above used validated local cache entries, so they do not count as live
+network verification. `requirements.txt` keeps tested minimum versions rather than a
+full platform-specific lock file; reproducible deployments should install in a
+controlled environment and record the resolved versions.
 
 ## Disclaimer
 

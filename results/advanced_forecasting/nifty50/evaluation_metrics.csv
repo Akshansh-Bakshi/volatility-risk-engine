@@ -1,0 +1,5 @@
+model_name,model_type,ticker,series_description,frequency,eval_start,eval_end,n_observations,rmse,mae,mape,n_zero_actuals,notes
+"ARIMA(1,1,0)",arima,^NSEI,adjusted close price,1d,2026-07-24,2026-10-19,60,745.6801425915977,624.2993139392486,2.678865207902903,0,[]
+"SARIMA(1,1,0)(1,0,0,5)",sarima,^NSEI,adjusted close price,1d,2026-07-24,2026-10-19,60,745.6725529383011,624.2972542843185,2.6788541201218496,0,[]
+HoltWinters(trend=add),holtwinters,^NSEI,adjusted close price,1d,2026-07-24,2026-10-19,60,852.6209129258391,693.0704898266463,2.9848124309447965,0,[]
+XGBoost recursive,xgboost,^NSEI,adjusted close price,1d,2026-07-24,2026-10-19,60,849.9216760452281,662.7930338541667,2.8650227915049618,0,[]

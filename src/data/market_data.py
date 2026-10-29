@@ -128,6 +128,7 @@ class MarketData:
         default_factory=lambda: pd.DatetimeIndex([], name=INDEX_NAME)
     )
     from_cache: bool = False
+    fallback_reason: str | None = None
 
     def __post_init__(self) -> None:
         if self.fetched_at.tzinfo is None or self.fetched_at.utcoffset() != timedelta(0):
@@ -137,6 +138,8 @@ class MarketData:
             raise DataValidationError(
                 "MarketData.dropped_dates must be a timezone-naive DatetimeIndex."
             )
+        if self.fallback_reason is not None and not isinstance(self.fallback_reason, str):
+            raise DataValidationError("MarketData.fallback_reason must be text or None.")
 
     @property
     def rows_dropped(self) -> int:

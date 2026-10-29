@@ -16,9 +16,11 @@ import plotly.graph_objects as go
 import streamlit as st
 
 from src.config import get_settings
+from src.backtesting.var_tests import christoffersen_conditional_coverage, christoffersen_independence, kupiec_pof
 from src.data.factory import create_market_data_loader
 from src.data.loader import MarketDataLoader
 from src.data.market_data import MarketData, MarketDataRequest
+from src.evaluation.unified import classify_volatility_regime, fz0_var_es_score, summarize_by_regime
 from src.exceptions import ConfigurationError, DataError, PreprocessingError
 from src.logging_config import PACKAGE_LOGGER_NAME, configure_logging
 from src.preprocessing.returns import build_return_series
@@ -33,6 +35,9 @@ DEFAULT_SYNOPSIS_TICKER = "^NSEI"
 MIN_SYNOPSIS_OBSERVATIONS = 500
 VAR_RESULTS_DIR = Path(__file__).resolve().parent / "results" / "var_backtesting" / "nifty50"
 VAR_RESULTS_STALE_AFTER = timedelta(days=30)
+RISK_MONITORING_RESULTS_DIR = Path(__file__).resolve().parent / "results" / "risk_monitoring" / "nifty50"
+STRESS_TESTING_RESULTS_DIR = Path(__file__).resolve().parent / "results" / "stress_testing" / "nifty50"
+ADVANCED_FORECAST_RESULTS_DIR = Path(__file__).resolve().parent / "results" / "advanced_forecasting" / "nifty50"
 ASSET_PRESETS: dict[str, dict[str, str]] = {
     "India": {
         "NIFTY 50 (^NSEI)": "^NSEI",
@@ -79,6 +84,341 @@ class VaRDashboardArtifacts:
         return self.forecasts is not None and self.summary is not None and self.metadata is not None
 
 
+@dataclass(frozen=True)
+class ForecastDashboardArtifacts:
+    """Validated saved Stage 12A forecast artifacts for dashboard display."""
+
+    forecasts: pd.DataFrame | None
+    metrics: pd.DataFrame | None
+    metadata: dict[str, Any] | None
+    status: str
+    message: str
+
+    @property
+    def available(self) -> bool:
+        return self.forecasts is not None and self.metrics is not None and self.metadata is not None
+
+
+@dataclass(frozen=True)
+class Stage13DashboardArtifacts:
+    """Validated Stage 13 rolling-risk and stress artifacts for display."""
+
+    monitoring: pd.DataFrame | None
+    summary: dict[str, Any] | None
+    risk_metadata: dict[str, Any] | None
+    scenarios: pd.DataFrame | None
+    stress_metadata: dict[str, Any] | None
+    status: str
+    message: str
+
+    @property
+    def available(self) -> bool:
+        return all(value is not None for value in (self.monitoring, self.summary, self.risk_metadata, self.scenarios, self.stress_metadata))
+
+
+def _metadata_is_stale(metadata: dict[str, Any], *, now: datetime, saved_at: datetime) -> bool:
+    """Treat either old source data or an old artifact generation as stale."""
+    if now.tzinfo is None:
+        raise ValueError("now must be timezone-aware")
+    generated_value = metadata.get("created_at_utc")
+    generated = datetime.fromisoformat(generated_value) if generated_value else saved_at
+    retrieved = datetime.fromisoformat(
+        metadata.get("data", {}).get("retrieved_at_utc")
+        or metadata.get("data", {}).get("data_fetched_at_utc")
+        or metadata.get("data_fetched_at_utc")
+    )
+    if generated.tzinfo is None or retrieved.tzinfo is None:
+        raise ValueError("artifact timestamps must include a timezone")
+    limit = VAR_RESULTS_STALE_AFTER
+    return any(now.astimezone(timezone.utc) - stamp.astimezone(timezone.utc) > limit for stamp in (generated, retrieved, saved_at))
+
+
+def load_stage13_dashboard_artifacts(
+    risk_directory: Path | None = None,
+    stress_directory: Path | None = None,
+    *,
+    now: datetime | None = None,
+) -> Stage13DashboardArtifacts:
+    """Read saved Stage 13 files and verify their schemas and recorded date ranges."""
+    risk_directory = RISK_MONITORING_RESULTS_DIR if risk_directory is None else risk_directory
+    stress_directory = STRESS_TESTING_RESULTS_DIR if stress_directory is None else stress_directory
+    risk_paths = (risk_directory / "daily_risk_monitoring.csv", risk_directory / "risk_summary.json", risk_directory / "metadata.json")
+    stress_paths = (stress_directory / "scenario_results.csv", stress_directory / "metadata.json")
+    if any(not path.is_file() for path in (*risk_paths, *stress_paths)):
+        return Stage13DashboardArtifacts(None, None, None, None, None, "missing", "Stage 13 monitoring and stress results are not saved yet.")
+    try:
+        monitoring = pd.read_csv(risk_paths[0], parse_dates=["date"], index_col="date")
+        summary = json.loads(risk_paths[1].read_text(encoding="utf-8"))
+        risk_metadata = json.loads(risk_paths[2].read_text(encoding="utf-8"))
+        scenarios = pd.read_csv(stress_paths[0])
+        stress_metadata = json.loads(stress_paths[1].read_text(encoding="utf-8"))
+        levels = [int(round(float(level) * 100)) for level in risk_metadata["risk_configuration"]["confidence_levels"]]
+        volatility_column = f"realised_volatility_{int(risk_metadata['risk_configuration']['realised_volatility_window'])}d_annualised_pct"
+        risk_columns = {"log_return_pct", "realised_loss_pct", volatility_column, "drawdown_pct"}
+        for level in levels:
+            risk_columns.update({f"historical_var_{level}_pct", f"historical_es_{level}_pct", f"historical_breach_{level}"})
+        if not isinstance(monitoring.index, pd.DatetimeIndex) or monitoring.empty or monitoring.index.hasnans or monitoring.index.has_duplicates or not monitoring.index.is_monotonic_increasing:
+            raise ValueError("risk-monitoring dates must be present, unique, and chronological")
+        if not risk_columns.issubset(monitoring.columns):
+            raise ValueError("risk-monitoring columns do not match the Stage 13 schema")
+        numeric = monitoring.select_dtypes(include=["number"]).to_numpy(dtype="float64")
+        if np.isinf(numeric).any():
+            raise ValueError("risk-monitoring series contain infinite values")
+        if not isinstance(summary, dict) or not isinstance(risk_metadata, dict) or risk_metadata.get("artifact_schema_version") != 1 or risk_metadata.get("experiment") != "Stage 13A trailing historical risk monitoring":
+            raise ValueError("risk-monitoring metadata is invalid")
+        evaluation = summary
+        risk_configuration = risk_metadata["risk_configuration"]
+        if not isinstance(risk_configuration, dict) or not isinstance(risk_metadata["data"], dict):
+            raise ValueError("risk-monitoring metadata is incomplete")
+        if not isinstance(summary.get("latest"), dict) or not isinstance(summary.get("breaches"), dict):
+            raise ValueError("risk summary is incomplete")
+        if not np.isfinite(float(summary["maximum_drawdown_pct"])):
+            raise ValueError("risk summary contains a non-finite drawdown")
+        for level in levels:
+            if str(level) not in summary["breaches"]:
+                raise ValueError("risk summary is missing a confidence level")
+            for key in ("all_count", "all_rate", "recent_count", "recent_rate", "recent_observations"):
+                if key not in summary["breaches"][str(level)]:
+                    raise ValueError("risk summary breach statistics are incomplete")
+        if monitoring.index[0].date().isoformat() != evaluation["start"] or monitoring.index[-1].date().isoformat() != evaluation["end"]:
+            raise ValueError("risk-monitoring dates do not match summary metadata")
+        stress_columns = {"scenario_name", "scenario_type", "scenario_start", "scenario_end", "assumptions", "starting_value", "loss_amount", "loss_pct", "stressed_value", "asset_simple_returns", "asset_contributions"}
+        if scenarios.empty or not stress_columns.issubset(scenarios.columns):
+            raise ValueError("stress scenario columns do not match the Stage 13 schema")
+        stress_numeric = scenarios[["starting_value", "loss_amount", "loss_pct", "stressed_value"]].to_numpy(dtype="float64")
+        if not np.isfinite(stress_numeric).all():
+            raise ValueError("stress scenarios contain incomplete or non-finite values")
+        if not isinstance(stress_metadata, dict) or stress_metadata.get("artifact_schema_version", 1) != 1 or stress_metadata.get("experiment") != "Stage 13B historical and hypothetical portfolio stress scenarios":
+            raise ValueError("stress metadata is invalid")
+        portfolio = stress_metadata.get("portfolio")
+        if not isinstance(portfolio, dict) or not {"name", "currency", "starting_value", "weights", "scope_note"}.issubset(portfolio):
+            raise ValueError("stress portfolio metadata is incomplete")
+        current = now or datetime.now(timezone.utc)
+        saved_at = min(datetime.fromtimestamp(path.stat().st_mtime, tz=timezone.utc) for path in (*risk_paths, *stress_paths))
+        stale = _metadata_is_stale(risk_metadata, now=current, saved_at=saved_at) or _metadata_is_stale(stress_metadata, now=current, saved_at=saved_at)
+        status = "stale" if stale else "ready"
+        message = "Saved Stage 13 results are older than 30 days; rerun the experiment to refresh them." if stale else "Saved Stage 13 results loaded."
+        return Stage13DashboardArtifacts(monitoring, summary, risk_metadata, scenarios, stress_metadata, status, message)
+    except (OSError, ValueError, KeyError, TypeError, AttributeError, OverflowError, json.JSONDecodeError, pd.errors.ParserError) as exc:
+        logger.warning("Saved Stage 13 artifacts are invalid: %s", exc)
+        return Stage13DashboardArtifacts(None, None, None, None, None, "incomplete", "Saved Stage 13 artifacts are incomplete or invalid.")
+
+
+def _render_stage13_risk_monitoring() -> None:
+    """Present saved rolling-risk and stress outputs without fitting models."""
+    artifacts = load_stage13_dashboard_artifacts()
+    if not artifacts.available:
+        st.caption(artifacts.message)
+        return
+    if artifacts.status == "stale":
+        st.warning(artifacts.message)
+    assert artifacts.monitoring is not None and artifacts.summary is not None
+    assert artifacts.risk_metadata is not None and artifacts.scenarios is not None
+    assert artifacts.stress_metadata is not None
+    frame, summary, risk_meta = artifacts.monitoring, artifacts.summary, artifacts.risk_metadata
+    risk_config = risk_meta["risk_configuration"]
+    volatility_name = f"realised_volatility_{risk_config['realised_volatility_window']}d_annualised_pct"
+    evaluation = f"{summary['start']} to {summary['end']}"
+    st.markdown("#### Rolling risk monitoring")
+    st.caption(
+        f"{risk_meta['data']['ticker']} · {evaluation} · source {risk_meta['data']['source']} · "
+        f"{risk_meta['data']['return_metadata']['return_definition']}"
+    )
+    latest_vol = frame[volatility_name].dropna()
+    latest_drawdown = frame["drawdown_pct"].dropna()
+    risk_levels = [int(round(float(level) * 100)) for level in risk_config["confidence_levels"]]
+    metric_columns = st.columns(2 + 2 * len(risk_levels), gap="small")
+    metric_columns[0].metric(f"{risk_config['realised_volatility_window']}D realised vol · ann.", f"{latest_vol.iloc[-1]:.2f}%" if len(latest_vol) else "N/A")
+    metric_columns[1].metric("Maximum drawdown", f"{summary['maximum_drawdown_pct']:.2f}%")
+    for i, level in enumerate(risk_levels):
+        metric_columns[2 + 2 * i].metric(f"Historical VaR {level}%", f"{summary['latest'].get(f'historical_var_{level}_pct', float('nan')):.2f}%")
+        metric_columns[3 + 2 * i].metric(f"Expected Shortfall {level}%", f"{summary['latest'].get(f'historical_es_{level}_pct', float('nan')):.2f}%")
+    from plotly.subplots import make_subplots
+
+    chart = make_subplots(rows=2, cols=1, shared_xaxes=True, vertical_spacing=0.12, subplot_titles=("Trailing realised volatility (annualised)", "Prior-window historical VaR and Expected Shortfall"))
+    chart.add_trace(go.Scatter(x=frame.index, y=frame[volatility_name], name="Realised volatility", line={"color": "#40c4a0"}), row=1, col=1)
+    palette = {95: ("#f2b84b", "#ff7188"), 99: ("#8b9eff", "#d783ff")}
+    for level in risk_levels:
+        var_color, es_color = palette.get(level, ("#f2b84b", "#ff7188"))
+        chart.add_trace(go.Scatter(x=frame.index, y=frame[f"historical_var_{level}_pct"], name=f"VaR {level}%", line={"color": var_color}), row=2, col=1)
+        chart.add_trace(go.Scatter(x=frame.index, y=frame[f"historical_es_{level}_pct"], name=f"ES {level}%", line={"color": es_color, "dash": "dot"}), row=2, col=1)
+    chart.update_yaxes(title_text="Annualised volatility (%)", row=1, col=1)
+    chart.update_yaxes(title_text="Loss threshold (% log return)", row=2, col=1)
+    chart.update_layout(height=560, margin={"l": 10, "r": 10, "t": 45, "b": 10}, paper_bgcolor="#0b1220", plot_bgcolor="#0b1220", font={"color": "#dbe6f5"}, legend={"orientation": "h"})
+    st.plotly_chart(chart, use_container_width=True, config={"displaylogo": False})
+
+    breach_rows = []
+    for level in risk_levels:
+        stats = summary["breaches"][str(level)]
+        breach_series = frame[f"historical_breach_{level}"].dropna().astype(bool).to_numpy()
+        tail_probability = 1.0 - level / 100.0
+        coverage_test = kupiec_pof(breach_series, tail_probability)
+        independence_test = christoffersen_independence(breach_series, tail_probability)
+        conditional_test = christoffersen_conditional_coverage(breach_series, tail_probability)
+        breach_rows.append({
+            "Confidence": f"{level}%",
+            "All-period breaches": stats["all_count"],
+            "All-period rate": stats["all_rate"],
+            "Expected rate": tail_probability,
+            "Kupiec p": coverage_test.p_value,
+            "Independence p": independence_test.p_value,
+            "Conditional coverage p": conditional_test.p_value,
+            "Recent breaches": stats["recent_count"],
+            "Recent rate": stats["recent_rate"],
+            "Recent valid observations": stats["recent_observations"],
+        })
+    st.dataframe(pd.DataFrame(breach_rows), hide_index=True, use_container_width=True)
+    st.caption(
+        "Realised volatility describes trailing returns through each date. Historical VaR and Expected Shortfall use only prior returns; "
+        "loss is the negative log return, VaR is its empirical confidence quantile, and ES is the average loss at or beyond VaR. "
+        "Drawdown uses adjusted close versus its running peak. All-period tests use the Stage 13 rolling historical VaR breaches; Kupiec tests unconditional coverage, Christoffersen tests independence, and conditional coverage combines both. These asymptotic tests have low power for rare breaches and are descriptive for this one sample."
+    )
+
+    st.markdown("#### Stress scenarios")
+    stress = artifacts.scenarios
+    portfolio = artifacts.stress_metadata["portfolio"]
+    st.caption(
+        f"{portfolio['name']} · starting value {portfolio['currency']} {portfolio['starting_value']:,.0f} · "
+        f"weights {portfolio['weights']} · {portfolio['scope_note']}"
+    )
+    view = stress.loc[:, ["scenario_name", "scenario_type", "scenario_start", "scenario_end", "assumptions", "starting_value", "loss_amount", "loss_pct", "stressed_value", "asset_simple_returns", "asset_contributions"]].rename(columns={
+        "scenario_name": "Scenario", "scenario_type": "Type", "scenario_start": "Start", "scenario_end": "End",
+        "assumptions": "Assumptions", "starting_value": "Starting value", "loss_amount": "Loss", "loss_pct": "Loss (%)",
+        "stressed_value": "Stressed value", "asset_simple_returns": "Asset simple returns", "asset_contributions": "Asset loss contributions",
+    })
+    st.dataframe(view, hide_index=True, use_container_width=True)
+    stress_chart = go.Figure(go.Bar(x=stress["scenario_name"], y=stress["loss_amount"], marker_color=["#ff7188" if kind == "historical" else "#f2b84b" for kind in stress["scenario_type"]]))
+    stress_chart.add_hline(y=0, line_color="#9eb1cb", line_width=1)
+    stress_chart.update_layout(title="Scenario loss in portfolio currency (negative values indicate gains)", height=360, margin={"l": 10, "r": 10, "t": 55, "b": 100}, paper_bgcolor="#0b1220", plot_bgcolor="#0b1220", font={"color": "#dbe6f5"}, xaxis={"tickangle": -35}, yaxis_title=f"Loss ({portfolio['currency']})")
+    st.plotly_chart(stress_chart, use_container_width=True, config={"displaylogo": False})
+    st.caption("Historical scenarios are observed one- and five-session return windows. Hypothetical declines are deterministic what-if shocks with no probability claim. Results assume fully invested long-only buy-and-hold weights and exclude fees, cash flows, leverage, and rebalancing.")
+
+
+def load_forecast_dashboard_artifacts(
+    directory: Path | None = None,
+    *,
+    now: datetime | None = None,
+) -> ForecastDashboardArtifacts:
+    """Load and validate saved model forecasts without fitting any models."""
+    directory = ADVANCED_FORECAST_RESULTS_DIR if directory is None else Path(directory)
+    paths = (directory / "daily_forecasts.csv", directory / "evaluation_metrics.csv", directory / "metadata.json")
+    missing = [path.name for path in paths if not path.is_file()]
+    if missing:
+        return ForecastDashboardArtifacts(None, None, None, "missing", "Stage 12A forecasts are not available yet.")
+    try:
+        forecasts = pd.read_csv(paths[0], parse_dates=["date"], index_col="date")
+        metrics = pd.read_csv(paths[1])
+        metadata = json.loads(paths[2].read_text(encoding="utf-8"))
+        required_forecasts = {"actual", "XGBoost recursive", "ARIMA(1,1,0)", "SARIMA(1,1,0)(1,0,0,5)", "HoltWinters(trend=add)"}
+        required_metrics = {"model_name", "rmse", "mae", "mape"}
+        if not required_forecasts.issubset(forecasts.columns) or not required_metrics.issubset(metrics.columns):
+            raise ValueError("forecast or metric columns do not match the Stage 12A schema")
+        if (
+            not isinstance(forecasts.index, pd.DatetimeIndex)
+            or forecasts.empty or forecasts.index.hasnans
+            or forecasts.index.has_duplicates or not forecasts.index.is_monotonic_increasing
+        ):
+            raise ValueError("forecast dates must be present, unique, and chronological")
+        if not np.isfinite(forecasts.to_numpy(dtype="float64")).all():
+            raise ValueError("forecast values contain missing or non-finite values")
+        if not required_metrics.issubset(set(metrics.columns)) or metrics.empty:
+            raise ValueError("evaluation metrics are empty or incomplete")
+        if not isinstance(metadata, dict) or metadata.get("artifact_schema_version") != 1 or metadata.get("experiment") != "Stage 12A recursive XGBoost adjusted-close forecasting":
+            raise ValueError("metadata does not identify the Stage 12A experiment")
+        if not np.isfinite(metrics[["rmse", "mae", "mape"]].to_numpy(dtype="float64")).all():
+            raise ValueError("evaluation metrics contain missing or non-finite values")
+        expected_models = {"XGBoost recursive", "ARIMA(1,1,0)", "SARIMA(1,1,0)(1,0,0,5)", "HoltWinters(trend=add)"}
+        if set(metrics["model_name"]) != expected_models:
+            raise ValueError("evaluation metrics do not contain the expected model set")
+        if len(forecasts) != int(metadata["evaluation"]["observations"]):
+            raise ValueError("forecast row count does not match metadata")
+        if forecasts.index[0].date().isoformat() != metadata["evaluation"]["start"] or forecasts.index[-1].date().isoformat() != metadata["evaluation"]["end"]:
+            raise ValueError("forecast dates do not match metadata")
+        current = now or datetime.now(timezone.utc)
+        saved_at = datetime.fromtimestamp(paths[2].stat().st_mtime, tz=timezone.utc)
+        stale = _metadata_is_stale(metadata, now=current, saved_at=saved_at)
+        status = "stale" if stale else "ready"
+        message = "Saved Stage 12A results are older than 30 days; rerun the experiment to refresh them." if stale else "Saved Stage 12A forecast results loaded."
+        return ForecastDashboardArtifacts(forecasts, metrics, metadata, status, message)
+    except (OSError, ValueError, KeyError, TypeError, AttributeError, OverflowError, json.JSONDecodeError, pd.errors.ParserError) as exc:
+        logger.warning("Saved Stage 12A forecast artifacts are invalid: %s", exc)
+        return ForecastDashboardArtifacts(None, None, None, "incomplete", "Saved Stage 12A artifacts are incomplete or invalid.")
+
+
+def _render_forecasting() -> None:
+    """Present the saved Stage 12A experiment; rerenders never train models."""
+    artifacts = load_forecast_dashboard_artifacts()
+    if not artifacts.available:
+        st.info(artifacts.message) if artifacts.status == "missing" else st.warning(artifacts.message)
+        return
+    if artifacts.status == "stale":
+        st.warning(artifacts.message)
+    assert artifacts.forecasts is not None and artifacts.metrics is not None and artifacts.metadata is not None
+    forecasts, metrics, metadata = artifacts.forecasts, artifacts.metrics, artifacts.metadata
+    evaluation = metadata["evaluation"]
+    st.markdown("#### Saved NIFTY 50 adjusted-close forecast comparison")
+    st.caption(
+        f"{evaluation['start']} to {evaluation['end']} · {evaluation['observations']} sessions · "
+        f"XGBoost {metadata['models']['xgboost']['version']} · recursive test forecast"
+    )
+    chart = go.Figure()
+    chart.add_trace(go.Scatter(x=forecasts.index, y=forecasts["actual"], name="Actual", line={"color": "#dbe6f5"}))
+    for name, color in (("XGBoost recursive", "#40c4a0"), ("ARIMA(1,1,0)", "#f2b84b"), ("SARIMA(1,1,0)(1,0,0,5)", "#8b9eff"), ("HoltWinters(trend=add)", "#ff7188")):
+        chart.add_trace(go.Scatter(x=forecasts.index, y=forecasts[name], name=name, line={"color": color}))
+    chart.update_layout(height=380, margin={"l": 10, "r": 10, "t": 20, "b": 10}, paper_bgcolor="#0b1220", plot_bgcolor="#0b1220", font={"color": "#dbe6f5"}, yaxis_title="Adjusted close price")
+    st.plotly_chart(chart, use_container_width=True, config={"displaylogo": False})
+    display = metrics.loc[:, ["model_name", "rmse", "mae", "mape"]].rename(columns={"model_name": "Model", "rmse": "RMSE", "mae": "MAE", "mape": "MAPE (%)"})
+    st.dataframe(display, hide_index=True, use_container_width=True)
+    st.caption("RMSE and MAE use price units. MAPE is secondary and can mislead when targets are near zero. Scores describe this one held-out window only.")
+
+    volatility_dir = Path(__file__).resolve().parent / "results" / "volatility_forecasting" / "nifty50"
+    volatility_paths = (volatility_dir / "daily_forecasts.csv", volatility_dir / "summary_metrics.csv", volatility_dir / "metadata.json")
+    if any(not path.is_file() for path in volatility_paths):
+        st.caption("Saved Stage 9 volatility diagnostics are not available yet.")
+    try:
+        volatility = pd.read_csv(volatility_dir / "daily_forecasts.csv", parse_dates=["date"], index_col="date")
+        volatility_metrics = pd.read_csv(volatility_dir / "summary_metrics.csv")
+        volatility_metadata = json.loads((volatility_dir / "metadata.json").read_text(encoding="utf-8"))
+        if not isinstance(volatility_metadata, dict) or volatility_metadata.get("artifact_schema_version") != 1 or volatility_metadata.get("experiment") != "Stage 9 expanding-window one-step-ahead volatility forecasting":
+            raise ValueError("metadata does not identify the supported Stage 9 schema")
+        if not isinstance(volatility.index, pd.DatetimeIndex) or volatility.index.empty or volatility.index.has_duplicates or not volatility.index.is_monotonic_increasing:
+            raise ValueError("forecast dates are missing, duplicated, or out of order")
+        if len(volatility) != int(volatility_metadata["evaluation"]["observations"]) or volatility.index[0].date().isoformat() != volatility_metadata["evaluation"]["start"] or volatility.index[-1].date().isoformat() != volatility_metadata["evaluation"]["end"]:
+            raise ValueError("forecast dates do not match Stage 9 metadata")
+        volatility_columns = {"realised_return_pct", "realised_squared_return_pct2", "garch_variance_pct2", "egarch_variance_pct2", "rolling_variance_pct2"}
+        metric_columns = {"model", "observations", "qlike_mean_log_h_plus_rv_over_h", "mae_pct2", "rmse_pct2"}
+        if not volatility_columns.issubset(volatility.columns) or volatility_metrics.empty or not metric_columns.issubset(volatility_metrics.columns):
+            raise ValueError("forecast or summary columns do not match the Stage 9 schema")
+        if not np.isfinite(volatility[list(volatility_columns)].to_numpy(dtype="float64")).all():
+            raise ValueError("volatility forecast values are incomplete or non-finite")
+        if not np.isfinite(volatility_metrics[["observations", "qlike_mean_log_h_plus_rv_over_h", "mae_pct2", "rmse_pct2"]].to_numpy(dtype="float64")).all():
+            raise ValueError("volatility summary metrics are incomplete or non-finite")
+        if not volatility.empty and {"realised_squared_return_pct2", "garch_variance_pct2", "egarch_variance_pct2", "rolling_variance_pct2"}.issubset(volatility.columns):
+            st.markdown("#### Volatility forecast diagnostics")
+            if _metadata_is_stale(volatility_metadata, now=datetime.now(timezone.utc), saved_at=datetime.fromtimestamp((volatility_dir / "metadata.json").stat().st_mtime, tz=timezone.utc)):
+                st.warning("Saved Stage 9 volatility results are older than 30 days; rerun the experiment to refresh them.")
+            st.caption("Variance forecasts versus squared daily log return (a noisy one-session realised-variance proxy); variance values and errors use percent². Separate one-step-ahead evaluation window.")
+            st.dataframe(volatility_metrics.loc[:, ["model", "observations", "qlike_mean_log_h_plus_rv_over_h", "mae_pct2", "rmse_pct2"]].rename(columns={
+                "model": "Model", "observations": "N", "qlike_mean_log_h_plus_rv_over_h": "Mean QLIKE (lower)", "mae_pct2": "Variance MAE (percent²)", "rmse_pct2": "Variance RMSE (percent²)"
+            }), hide_index=True, use_container_width=True)
+            prior_vol = volatility["realised_return_pct"].rolling(20, min_periods=20).std(ddof=1).shift(1) * np.sqrt(252)
+            regimes = classify_volatility_regime(prior_vol, lookback=252, minimum_history=60)
+            regime_values = volatility.assign(
+                garch_squared_error=(volatility["garch_variance_pct2"] - volatility["realised_squared_return_pct2"]) ** 2,
+                egarch_squared_error=(volatility["egarch_variance_pct2"] - volatility["realised_squared_return_pct2"]) ** 2,
+            )
+            regime_summary = summarize_by_regime(regime_values, regimes, metrics={
+                "GARCH mean squared error (percent⁴)": "garch_squared_error",
+                "EGARCH mean squared error (percent⁴)": "egarch_squared_error",
+            })
+            if not regime_summary.empty:
+                st.caption("Regimes use prior-only 20-session annualised realised volatility versus its expanding 252-session historical median; early dates without 60 prior observations are omitted.")
+                st.dataframe(regime_summary.rename(columns={"regime": "Prior-volatility regime", "observations": "N"}), hide_index=True, use_container_width=True)
+    except (OSError, ValueError, KeyError, TypeError, AttributeError, OverflowError, json.JSONDecodeError, pd.errors.ParserError) as exc:
+        logger.warning("Saved volatility evaluation artifacts unavailable: %s", exc)
+        st.warning("Saved Stage 9 volatility diagnostics are incomplete or invalid; rerun the experiment to refresh them.")
+
+
 VAR_FORECAST_COLUMNS = (
     "realised_loss_pct",
     "garch_var95_pct", "egarch_var95_pct", "historical_var95_pct",
@@ -120,6 +460,8 @@ def load_var_dashboard_artifacts(
         summary = pd.read_csv(summary_path)
         if not isinstance(metadata, dict):
             raise ValueError("metadata must be a JSON object")
+        if metadata.get("artifact_schema_version") != 1 or metadata.get("experiment") != "Stage 10 one-day-ahead VaR forecasts and statistical backtesting":
+            raise ValueError("metadata does not identify the supported Stage 10 artifact schema")
         missing_forecast = sorted(set(VAR_FORECAST_COLUMNS) - set(forecasts.columns))
         missing_summary = sorted(set(VAR_SUMMARY_COLUMNS) - set(summary.columns))
         if missing_forecast or missing_summary:
@@ -192,7 +534,7 @@ def load_var_dashboard_artifacts(
         return VaRDashboardArtifacts(
             forecasts, summary, metadata, saved_at, "ready", "Saved Stage 10 results loaded."
         )
-    except (OSError, ValueError, TypeError, KeyError, json.JSONDecodeError, pd.errors.ParserError) as exc:
+    except (OSError, ValueError, TypeError, KeyError, AttributeError, OverflowError, json.JSONDecodeError, pd.errors.ParserError) as exc:
         return VaRDashboardArtifacts(
             None, None, None, None, "incomplete",
             f"Saved Stage 10 results could not be displayed because they are incomplete or invalid ({exc}).",
@@ -417,6 +759,7 @@ def _render_risk_backtesting(selected_ticker: str) -> None:
         else:
             st.warning(artifacts.message)
         st.caption("Risk forecasts and tests are generated by the separate Stage 10 experiment.")
+        _render_stage13_risk_monitoring()
         return
 
     assert artifacts.forecasts is not None
@@ -487,6 +830,23 @@ def _render_risk_backtesting(selected_ticker: str) -> None:
         "These results describe one historical 252-observation evaluation period and do not guarantee future risk performance. "
         "At 99% confidence only about 2.52 breaches are expected in 252 observations, so backtests have limited statistical power."
     )
+    stage13 = load_stage13_dashboard_artifacts()
+    if stage13.available and stage13.monitoring is not None and stage13.risk_metadata is not None:
+        risk_frame = stage13.monitoring
+        risk_config = stage13.risk_metadata["risk_configuration"]
+        st.markdown("#### Historical VaR and Expected Shortfall joint score")
+        es_rows = []
+        for confidence in risk_config["confidence_levels"]:
+            level = int(round(float(confidence) * 100))
+            valid = risk_frame[["realised_loss_pct", f"historical_var_{level}_pct", f"historical_es_{level}_pct"]].dropna()
+            if valid.empty:
+                continue
+            scores = fz0_var_es_score(valid["realised_loss_pct"], valid[f"historical_var_{level}_pct"], valid[f"historical_es_{level}_pct"], 1.0 - float(confidence))
+            es_rows.append({"Confidence": f"{level}%", "N": len(valid), "FZ0 joint score (lower)": float(np.mean(scores)), "Evaluation": f"{valid.index[0].date()} to {valid.index[-1].date()}"})
+        if es_rows:
+            st.dataframe(pd.DataFrame(es_rows), hide_index=True, use_container_width=True)
+            st.caption("FZ0 is a joint scoring rule for positive loss VaR and ES forecasts. Scores assess the Stage 13 rolling historical method and are not directly comparable with price or variance forecast errors.")
+    _render_stage13_risk_monitoring()
 
 
 def _render_dashboard(data: SynopsisData) -> None:
@@ -542,8 +902,8 @@ def _render_dashboard(data: SynopsisData) -> None:
         config={"displaylogo": False, "scrollZoom": True},
     )
 
-    behavior_tab, distribution_tab, profile_tab, risk_tab = st.tabs(
-        ["Market behaviour", "Returns & distribution", "Profile & data health", "Risk & Backtesting"]
+    behavior_tab, distribution_tab, profile_tab, forecast_tab, risk_tab = st.tabs(
+        ["Market behaviour", "Returns & distribution", "Profile & data health", "Forecasting", "Risk & Backtesting"]
     )
     with behavior_tab:
         left, right = st.columns(2, gap="small")
@@ -605,6 +965,9 @@ def _render_dashboard(data: SynopsisData) -> None:
 
     with risk_tab:
         _render_risk_backtesting(ticker)
+
+    with forecast_tab:
+        _render_forecasting()
 
     st.markdown("#### What the data shows")
     findings = insight_cards(stats, metrics)

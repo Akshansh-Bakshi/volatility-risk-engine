@@ -11,7 +11,7 @@ import pandas as pd
 import pytest
 
 from src.data.market_data import STANDARD_COLUMNS
-from src.data.validation import validate_prices
+from src.data.validation import audit_price_quality, validate_prices
 from src.exceptions import (
     DataValidationError,
     EmptyDataError,
@@ -223,6 +223,35 @@ def test_non_positive_close_is_rejected_with_its_date(bad_price: float) -> None:
 
     with pytest.raises(DataValidationError, match=r"non-positive close on 2023-01-16"):
         validate(frame)
+
+
+@pytest.mark.parametrize(("column", "value"), [("open", 0.0), ("high", -2.0), ("low", 0.0)])
+def test_non_positive_ohlc_prices_are_rejected(column: str, value: float) -> None:
+    frame = make_prices()
+    frame.loc[frame.index[3], column] = value
+    with pytest.raises(DataValidationError, match=f"non-positive {column}"):
+        validate(frame)
+
+
+def test_negative_volume_is_rejected() -> None:
+    negative_volume = make_prices()
+    negative_volume.loc[negative_volume.index[3], "volume"] = -1
+    with pytest.raises(DataValidationError, match="negative value"):
+        validate(negative_volume)
+
+
+def test_quality_audit_warns_on_large_moves_staleness_and_weekday_gap_without_dropping_data() -> None:
+    frame = make_prices(periods=4)
+    frame.index = pd.DatetimeIndex(["2024-01-02", "2024-01-03", "2024-01-08", "2024-01-09"], name="date")
+    frame.loc[frame.index[1], ["open", "high", "low", "close"]] *= 1.5
+    request = make_request(start=date(2024, 1, 2))
+    warnings = audit_price_quality(
+        frame, request, now=pd.Timestamp("2024-01-20", tz="UTC").to_pydatetime()
+    )
+    assert any("daily close change" in warning for warning in warnings)
+    assert any("missing weekday" in warning for warning in warnings)
+    assert any("calendar days old" in warning for warning in warnings)
+    assert len(frame) == 4, "quality diagnostics must not delete legitimate large moves or gaps"
 
 
 @pytest.mark.parametrize(("column", "value"), [("close", np.inf), ("volume", -np.inf)])

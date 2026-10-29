@@ -35,7 +35,7 @@ STORED = make_prices()  # business days 2023-01-02 .. 2024-02-23
 
 
 def provider_with(fake: FakeYahoo) -> YahooFinanceProvider:
-    return YahooFinanceProvider(ticker_factory=fake)
+    return YahooFinanceProvider(ticker_factory=fake, sleep=lambda _: None)
 
 
 @pytest.fixture
@@ -75,6 +75,7 @@ def test_history_is_requested_with_every_value_affecting_option_pinned(fake: Fak
         "repair": False,
         "keepna": True,
         "raise_errors": True,
+        "timeout": 15.0,
     }
 
 
@@ -317,6 +318,37 @@ def test_rate_limiting_is_reported_as_a_fetch_error(fake: FakeYahoo) -> None:
 
     with pytest.raises(DataFetchError, match="rate-limited"):
         provider_with(fake).fetch(make_request())
+
+
+def test_transient_connection_failure_is_retried_once_then_succeeds(fake: FakeYahoo) -> None:
+    attempts = 0
+
+    class IntermittentTicker:
+        def __init__(self, symbol: str) -> None:
+            self.symbol = symbol
+
+        def history(self, **kwargs):
+            nonlocal attempts
+            attempts += 1
+            if attempts == 1:
+                raise TimeoutError("temporary timeout")
+            return fake(self.symbol).history(**kwargs)
+
+    frame = YahooFinanceProvider(ticker_factory=IntermittentTicker, sleep=lambda _: None).fetch(make_request())
+
+    assert not frame.empty
+    assert attempts == 2
+
+
+def test_retry_count_is_bounded_and_original_provider_error_is_preserved(fake: FakeYahoo) -> None:
+    fake.error = ConnectionError("offline")
+    provider = YahooFinanceProvider(ticker_factory=fake, retries=2, sleep=lambda _: None)
+
+    with pytest.raises(DataFetchError, match=r"after 3 attempt\(s\)") as caught:
+        provider.fetch(make_request())
+
+    assert len(fake.calls) == 3
+    assert isinstance(caught.value.__cause__, ConnectionError)
 
 
 def test_interrupts_are_not_swallowed_by_the_vendor_boundary(fake: FakeYahoo) -> None:

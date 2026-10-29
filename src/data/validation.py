@@ -26,6 +26,7 @@ stages rather than to a hard ingestion gate.
 from __future__ import annotations
 
 import logging
+from datetime import datetime, timezone
 
 import numpy as np
 import pandas as pd
@@ -176,6 +177,17 @@ def validate_prices(
         raise DataValidationError(
             f"Invalid prices for {context}: non-positive close on {_dates(non_positive)}."
         )
+    for column in ("open", "high", "low"):
+        invalid = usable_index[(usable[column].notna() & usable[column].le(0)).to_numpy()]
+        if len(invalid):
+            raise DataValidationError(
+                f"Invalid prices for {context}: non-positive {column} on {_dates(invalid)}."
+            )
+    negative_volume = usable_index[(usable["volume"].notna() & usable["volume"].lt(0)).to_numpy()]
+    if len(negative_volume):
+        raise DataValidationError(
+            f"Invalid volume for {context}: negative value on {_dates(negative_volume)}."
+        )
     dropped = index[missing_close]
     if n_missing:
         logger.warning(
@@ -196,3 +208,64 @@ def validate_prices(
     # result does not depend on whether rows happened to be removed.
     usable.index = pd.DatetimeIndex(usable_index.as_unit("ns").to_numpy(), name=INDEX_NAME)
     return usable, pd.DatetimeIndex(dropped.as_unit("ns").to_numpy(), name=INDEX_NAME)
+
+
+def audit_price_quality(
+    prices: pd.DataFrame,
+    request: MarketDataRequest,
+    *,
+    now: datetime | None = None,
+    large_move_warning_pct: float = 20.0,
+    stale_after_days: int = 7,
+) -> tuple[str, ...]:
+    """Return warning-only diagnostics for an already validated daily price frame.
+
+    Weekday gaps are candidates because exchange holidays cannot be distinguished
+    without an exchange calendar. Large close changes are reported, never removed:
+    a genuine crash must remain available to risk models. A stale-date warning is
+    only emitted for requests asking for the latest data.
+    """
+    if not isinstance(prices, pd.DataFrame) or PRICE_COLUMN not in prices:
+        raise DataValidationError("Quality audit requires a validated frame with a close column.")
+    if isinstance(large_move_warning_pct, bool) or not np.isfinite(large_move_warning_pct) or large_move_warning_pct <= 0:
+        raise ValueError("large_move_warning_pct must be positive and finite.")
+    if isinstance(stale_after_days, bool) or not isinstance(stale_after_days, int) or stale_after_days < 1:
+        raise ValueError("stale_after_days must be a positive integer.")
+    warnings: list[str] = []
+    close = prices[PRICE_COLUMN].astype("float64")
+
+    changes = close.pct_change(fill_method=None) * 100.0
+    large = changes.abs() >= large_move_warning_pct
+    if large.any():
+        dates = [pd.Timestamp(value).date().isoformat() for value in changes.index[large][:_MAX_DATES_LISTED]]
+        warnings.append(
+            f"{int(large.sum())} daily close change(s) were at least {large_move_warning_pct:g}%; "
+            f"review without excluding valid market moves (dates: {', '.join(dates)})."
+        )
+
+    missing_weekdays: list[tuple[str, int]] = []
+    index = pd.DatetimeIndex(prices.index)
+    for previous, current in zip(index[:-1], index[1:], strict=True):
+        start = np.datetime64((previous + pd.Timedelta(days=1)).date())
+        end = np.datetime64(current.date())
+        count = int(np.busday_count(start, end))
+        if count > 1:
+            missing_weekdays.append((previous.date().isoformat(), current.date().isoformat()))
+    if missing_weekdays:
+        examples = ", ".join(f"{left}..{right}" for left, right in missing_weekdays[:_MAX_DATES_LISTED])
+        warnings.append(
+            f"{len(missing_weekdays)} interval(s) contain more than one missing weekday; "
+            f"exchange holidays cannot be distinguished from missing sessions without a calendar ({examples})."
+        )
+
+    if request.end is None and not prices.empty:
+        current_time = now or datetime.now(timezone.utc)
+        if current_time.tzinfo is None:
+            raise ValueError("now must be timezone-aware.")
+        age = (current_time.astimezone(timezone.utc).date() - index[-1].date()).days
+        if age > stale_after_days:
+            warnings.append(
+                f"Latest observation is {age} calendar days old (warning threshold {stale_after_days}); "
+                "exchange holidays and provider delays may affect freshness."
+            )
+    return tuple(warnings)

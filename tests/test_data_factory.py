@@ -11,7 +11,7 @@ import yfinance as yf
 from src.config import DataConfig, Settings, get_settings
 from src.data.factory import create_market_data_loader
 from src.data.market_data import MarketDataRequest
-from src.exceptions import InsufficientHistoryError
+from src.exceptions import DataFetchError, InsufficientHistoryError
 from tests.data_fakes import FakeYahoo, StaticProvider, make_prices, make_request
 
 
@@ -73,6 +73,35 @@ def test_yahoo_finance_is_the_default_provider(
 
     assert data.source == "yahoo_finance"
     assert len(fake.calls) == 1
+
+
+def test_yfinance_sqlite_cache_uses_configured_data_directory(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    fake = FakeYahoo({"TEST": make_prices()})
+    selected: list[str] = []
+    monkeypatch.setattr(yf, "Ticker", fake)
+    monkeypatch.setattr(yf, "set_tz_cache_location", selected.append)
+
+    create_market_data_loader(
+        settings_for(tmp_path, provider_timeout_seconds=8, provider_retries=2)
+    ).load(make_request())
+
+    assert selected == [str(tmp_path / "yfinance-cache")] * 2
+    assert (tmp_path / "yfinance-cache").is_dir()
+    assert fake.calls[0]["timeout"] == 8
+
+
+def test_factory_applies_configured_bounded_retries(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    fake = FakeYahoo({"TEST": make_prices()})
+    fake.error = ConnectionError("offline")
+    monkeypatch.setattr(yf, "Ticker", fake)
+    loader = create_market_data_loader(
+        settings_for(tmp_path, provider_retries=2),
+    )
+    with pytest.raises(DataFetchError, match="after 3 attempt"):
+        loader.load(make_request())
+    assert len(fake.calls) == 3
 
 
 def test_environment_configuration_flows_through_to_the_provider_call(

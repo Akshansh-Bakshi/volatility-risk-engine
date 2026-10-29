@@ -29,15 +29,20 @@ from __future__ import annotations
 
 import json
 import logging
+import math
+import time
+import threading
 import warnings
 from collections.abc import Callable
 from datetime import timedelta
+from pathlib import Path
 from typing import Any, Protocol
 
 import pandas as pd
 import yfinance as yf
 from yfinance import exceptions as yf_exceptions
 
+from src.config import DEFAULT_DATA_DIR
 from src.data.market_data import INDEX_NAME, STANDARD_COLUMNS, MarketDataRequest
 from src.exceptions import (
     DataFetchError,
@@ -50,6 +55,7 @@ from src.logging_config import PACKAGE_LOGGER_NAME
 logger = logging.getLogger(f"{PACKAGE_LOGGER_NAME}.data.yahoo")
 
 _RAISE_ERRORS_DEPRECATION = r"'raise_errors' deprecated"
+_YFINANCE_CACHE_LOCK = threading.RLock()
 
 
 class _HistoryClient(Protocol):
@@ -59,6 +65,19 @@ class _HistoryClient(Protocol):
 
 
 TickerFactory = Callable[[str], _HistoryClient]
+
+
+def configure_yfinance_cache(directory: str | Path) -> None:
+    """Place yfinance's internal SQLite caches under the configured data directory.
+
+    yfinance otherwise chooses a user-profile cache location, which can be
+    unavailable to service accounts or restricted environments. Call before the
+    first provider request; yfinance applies this location to its SQLite caches.
+    """
+    location = Path(directory).expanduser()
+    with _YFINANCE_CACHE_LOCK:
+        location.mkdir(parents=True, exist_ok=True)
+        yf.set_tz_cache_location(str(location))
 
 
 class YahooFinanceProvider:
@@ -72,44 +91,89 @@ class YahooFinanceProvider:
 
     name = "yahoo_finance"
 
-    def __init__(self, ticker_factory: TickerFactory | None = None) -> None:
+    def __init__(
+        self,
+        ticker_factory: TickerFactory | None = None,
+        *,
+        cache_directory: str | Path | None = None,
+        timeout_seconds: float = 15.0,
+        retries: int = 1,
+        sleep: Callable[[float], None] = time.sleep,
+    ) -> None:
+        if isinstance(timeout_seconds, bool) or not isinstance(timeout_seconds, (int, float)) or not math.isfinite(timeout_seconds) or timeout_seconds <= 0:
+            raise ValueError("timeout_seconds must be positive.")
+        if isinstance(retries, bool) or not isinstance(retries, int) or not 0 <= retries <= 5:
+            raise ValueError("retries must be an integer between 0 and 5.")
         self._ticker_factory: TickerFactory = ticker_factory or yf.Ticker
+        self._timeout_seconds = float(timeout_seconds)
+        self._retries = retries
+        self._sleep = sleep
+        self._cache_directory = Path(
+            cache_directory if cache_directory is not None else DEFAULT_DATA_DIR / "yfinance-cache"
+        )
+        configure_yfinance_cache(self._cache_directory)
 
     def fetch(self, request: MarketDataRequest) -> pd.DataFrame:
         """Download and structurally normalise the history described by ``request``."""
-        kwargs = _history_kwargs(request)
+        kwargs = _history_kwargs(request, timeout_seconds=self._timeout_seconds)
         context = f"{request.ticker} ({request.interval}, {request.range_label})"
         logger.debug("Requesting %s from Yahoo Finance with %s", request.ticker, kwargs)
-        try:
-            with warnings.catch_warnings():
-                warnings.filterwarnings(
-                    "ignore", message=_RAISE_ERRORS_DEPRECATION, category=DeprecationWarning
-                )
-                raw = self._ticker_factory(request.ticker).history(**kwargs)
-        except yf_exceptions.YFPricesMissingError as exc:
-            raise EmptyDataError(
-                f"Yahoo Finance has no price data for {context}: {exc}"
-            ) from exc
-        except yf_exceptions.YFTickerMissingError as exc:
-            raise InvalidTickerError(
-                f"Yahoo Finance does not recognise symbol {request.ticker!r} ({exc}). The symbol "
-                "is probably unknown or delisted, but yfinance reports the same condition when "
-                "Yahoo cannot be reached; check the symbol and your connection."
-            ) from exc
-        except yf_exceptions.YFRateLimitError as exc:
-            raise DataFetchError(
-                f"Yahoo Finance rate-limited the request for {context}; retry later."
-            ) from exc
-        except Exception as exc:  # noqa: BLE001 - deliberate vendor boundary, see below.
-            # yfinance surfaces network, HTTP, JSON-parsing and API errors as unrelated
-            # exception types (its own hierarchy, curl_cffi/requests errors, ValueError,
-            # KeyError, ...).  This is the single place where they are translated into the
-            # project's DataFetchError, with the original chained for diagnosis.
-            raise DataFetchError(
-                f"Yahoo Finance request failed for {context}: {type(exc).__name__}: {exc}"
-                f"{_connectivity_hint(exc)}"
-            ) from exc
+        with _YFINANCE_CACHE_LOCK:
+            # yfinance stores its SQLite cache manager globally. Re-select the
+            # provider's directory under a lock so concurrent project loaders
+            # cannot switch paths while another request has an open connection.
+            configure_yfinance_cache(self._cache_directory)
+            raw = self._fetch_with_retries(kwargs, context, request.ticker)
         return _normalize(raw, context)
+
+    def _fetch_with_retries(self, kwargs: dict[str, Any], context: str, ticker: str) -> object:
+        last_error: Exception | None = None
+        for attempt in range(self._retries + 1):
+            try:
+                with warnings.catch_warnings():
+                    warnings.filterwarnings(
+                        "ignore", message=_RAISE_ERRORS_DEPRECATION, category=DeprecationWarning
+                    )
+                    raw = self._ticker_factory(ticker).history(**kwargs)
+                break
+            except Exception as exc:  # noqa: BLE001 - vendor boundary.
+                last_error = exc
+                if attempt >= self._retries or not _is_retryable(exc):
+                    raise _translate_vendor_error(exc, context, ticker, attempts=attempt + 1) from exc
+                delay = min(0.25 * (2**attempt), 1.0)
+                logger.warning(
+                    "Transient Yahoo Finance failure for %s (%s: %s); retry %d/%d in %.2fs.",
+                    context, type(exc).__name__, exc, attempt + 1, self._retries, delay,
+                )
+                self._sleep(delay)
+        else:  # pragma: no cover - the loop always exits by break or exception.
+            assert last_error is not None
+            raise _translate_vendor_error(last_error, context, ticker, attempts=self._retries + 1)
+        return raw
+
+
+def _translate_vendor_error(exc: Exception, context: str, ticker: str, *, attempts: int) -> Exception:
+    if isinstance(exc, yf_exceptions.YFPricesMissingError):
+        return EmptyDataError(f"Yahoo Finance has no price data for {context}: {exc}")
+    if isinstance(exc, yf_exceptions.YFTickerMissingError):
+        return InvalidTickerError(
+            f"Yahoo Finance does not recognise symbol {ticker!r} ({exc}). "
+            "The provider may also report this when Yahoo cannot be reached; check the symbol and your connection."
+        )
+    if isinstance(exc, yf_exceptions.YFRateLimitError):
+        return DataFetchError(f"Yahoo Finance rate-limited the request for {context}; retry later.")
+    suffix = f" after {attempts} attempt(s)" if attempts > 1 else ""
+    return DataFetchError(
+        f"Yahoo Finance request failed for {context}{suffix}: {type(exc).__name__}: {exc}"
+        f"{_connectivity_hint(exc)}"
+    )
+
+
+def _is_retryable(exc: Exception) -> bool:
+    """Retry only transient connectivity/time-out/response-decoding failures."""
+    retryable_names = {"ConnectionError", "ConnectTimeout", "ReadTimeout", "Timeout", "ConnectionTimeout"}
+    names = {cls.__name__ for cls in type(exc).__mro__}
+    return isinstance(exc, (ConnectionError, TimeoutError, json.JSONDecodeError)) or bool(names & retryable_names)
 
 
 def _connectivity_hint(exc: Exception) -> str:
@@ -127,7 +191,7 @@ def _connectivity_hint(exc: Exception) -> str:
     return ""
 
 
-def _history_kwargs(request: MarketDataRequest) -> dict[str, Any]:
+def _history_kwargs(request: MarketDataRequest, *, timeout_seconds: float = 15.0) -> dict[str, Any]:
     """Translate a request into explicit ``Ticker.history`` arguments."""
     # yfinance's end is exclusive, so an inclusive request end needs +1 day.  None is
     # passed through: yfinance then resolves "now" when the call is made.
@@ -141,6 +205,7 @@ def _history_kwargs(request: MarketDataRequest) -> dict[str, Any]:
         "repair": False,  # no silent vendor-side price "repairs"
         "keepna": True,  # deliver rows without prices so validation can count them
         "raise_errors": True,
+        "timeout": timeout_seconds,
     }
 
 

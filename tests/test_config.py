@@ -153,6 +153,8 @@ def test_to_dict_is_json_serialisable_and_faithful() -> None:
             "min_observations": 250,
             "use_cache": True,
             "cache_max_age_hours": 6.0,
+            "provider_timeout_seconds": 15.0,
+            "provider_retries": 1,
         },
         "preprocessing": {
             "include_provisional_bar": False,
@@ -175,6 +177,8 @@ def test_data_layer_defaults() -> None:
     assert data.min_observations == 250
     assert data.use_cache is True
     assert data.cache_max_age_hours == 6.0
+    assert data.provider_timeout_seconds == 15.0
+    assert data.provider_retries == 1
 
 
 def test_data_layer_environment_overrides() -> None:
@@ -185,6 +189,8 @@ def test_data_layer_environment_overrides() -> None:
             "VRE_MIN_OBSERVATIONS": "500",
             "VRE_USE_CACHE": "no",
             "VRE_CACHE_MAX_AGE_HOURS": "0.5",
+            "VRE_PROVIDER_TIMEOUT_SECONDS": "8",
+            "VRE_PROVIDER_RETRIES": "2",
         }
     ).data
 
@@ -193,6 +199,8 @@ def test_data_layer_environment_overrides() -> None:
     assert data.min_observations == 500
     assert data.use_cache is False
     assert data.cache_max_age_hours == 0.5
+    assert data.provider_timeout_seconds == 8.0
+    assert data.provider_retries == 2
 
 
 def test_blank_data_layer_variables_fall_back_to_defaults() -> None:
@@ -204,6 +212,8 @@ def test_blank_data_layer_variables_fall_back_to_defaults() -> None:
             "MIN_OBSERVATIONS",
             "USE_CACHE",
             "CACHE_MAX_AGE_HOURS",
+            "PROVIDER_TIMEOUT_SECONDS",
+            "PROVIDER_RETRIES",
         )
     }
 
@@ -234,6 +244,10 @@ def test_boolean_false_spellings(word: str) -> None:
         {"VRE_CACHE_MAX_AGE_HOURS": "-1"},
         {"VRE_CACHE_MAX_AGE_HOURS": "nan"},
         {"VRE_CACHE_MAX_AGE_HOURS": "inf"},
+        {"VRE_PROVIDER_TIMEOUT_SECONDS": "0"},
+        {"VRE_PROVIDER_TIMEOUT_SECONDS": "nan"},
+        {"VRE_PROVIDER_RETRIES": "-1"},
+        {"VRE_PROVIDER_RETRIES": "6"},
     ],
 )
 def test_invalid_data_layer_environment_values_are_rejected(env: dict[str, str]) -> None:
@@ -252,6 +266,9 @@ def test_invalid_data_layer_environment_values_are_rejected(env: dict[str, str])
         {"cache_max_age_hours": True},
         {"cache_max_age_hours": 0},
         {"cache_max_age_hours": "6"},
+        {"provider_timeout_seconds": 0},
+        {"provider_retries": True},
+        {"provider_retries": 6},
     ],
 )
 def test_direct_data_config_construction_validates_data_layer_fields(

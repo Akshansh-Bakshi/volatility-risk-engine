@@ -4,14 +4,14 @@ from __future__ import annotations
 
 import json
 from pathlib import Path
-from datetime import date, datetime, timezone
+from datetime import date, datetime, timedelta, timezone
 
 import pandas as pd
 import pytest
 from streamlit.testing.v1 import AppTest
 
 import app
-from app import _price_unit, load_synopsis_data, load_var_dashboard_artifacts, resolve_ticker
+from app import _price_unit, load_forecast_dashboard_artifacts, load_synopsis_data, load_var_dashboard_artifacts, resolve_ticker
 from tests.data_fakes import make_market_data, make_prices
 
 APP_PATH = Path(__file__).resolve().parents[1] / "app.py"
@@ -132,6 +132,8 @@ def _write_var_artifacts(directory: Path) -> None:
     summary.to_csv(directory / "backtest_summary.csv", index=False)
 
     metadata = {
+        "artifact_schema_version": 1,
+        "experiment": "Stage 10 one-day-ahead VaR forecasts and statistical backtesting",
         "data": {
             "ticker": "^NSEI",
             "data_fetched_at_utc": datetime.now(timezone.utc).isoformat(),
@@ -187,12 +189,96 @@ def test_var_artifact_loader_marks_old_retrieval_as_stale(tmp_path: Path) -> Non
     assert "older than 30 days" in result.message
 
 
+def test_var_artifact_loader_rejects_incompatible_schema(tmp_path: Path) -> None:
+    _write_var_artifacts(tmp_path)
+    metadata_path = tmp_path / "metadata.json"
+    metadata = json.loads(metadata_path.read_text(encoding="utf-8"))
+    metadata["artifact_schema_version"] = 99
+    metadata_path.write_text(json.dumps(metadata), encoding="utf-8")
+
+    result = load_var_dashboard_artifacts(tmp_path)
+
+    assert not result.available
+    assert result.status == "incomplete"
+
+
+def _write_forecast_artifacts(directory: Path, *, created_at: datetime | None = None) -> None:
+    directory.mkdir(parents=True, exist_ok=True)
+    index = pd.bdate_range("2025-01-02", periods=3, name="date")
+    pd.DataFrame({
+        "actual": [100.0, 101.0, 102.0],
+        "XGBoost recursive": [100.1, 100.8, 102.2],
+        "ARIMA(1,1,0)": [100.0, 101.1, 101.9],
+        "SARIMA(1,1,0)(1,0,0,5)": [100.2, 100.9, 102.1],
+        "HoltWinters(trend=add)": [99.9, 101.0, 102.0],
+    }, index=index).to_csv(directory / "daily_forecasts.csv", index_label="date")
+    pd.DataFrame([
+        {"model_name": name, "rmse": 0.2, "mae": 0.1, "mape": 0.1}
+        for name in ("XGBoost recursive", "ARIMA(1,1,0)", "SARIMA(1,1,0)(1,0,0,5)", "HoltWinters(trend=add)")
+    ]).to_csv(directory / "evaluation_metrics.csv", index=False)
+    created = created_at or datetime.now(timezone.utc)
+    metadata = {
+        "artifact_schema_version": 1,
+        "experiment": "Stage 12A recursive XGBoost adjusted-close forecasting",
+        "created_at_utc": created.isoformat(),
+        "data": {"retrieved_at_utc": created.isoformat()},
+        "evaluation": {"start": index[0].date().isoformat(), "end": index[-1].date().isoformat(), "observations": 3},
+        "models": {"xgboost": {"version": "test"}},
+    }
+    (directory / "metadata.json").write_text(json.dumps(metadata), encoding="utf-8")
+
+
+def test_forecast_artifact_loader_handles_fresh_stale_and_bad_schema(tmp_path: Path) -> None:
+    fresh_dir = tmp_path / "fresh"
+    current = datetime.now(timezone.utc)
+    _write_forecast_artifacts(fresh_dir, created_at=current)
+    fresh = load_forecast_dashboard_artifacts(fresh_dir, now=current + timedelta(minutes=1))
+    assert fresh.available and fresh.status == "ready"
+
+    stale_dir = tmp_path / "stale"
+    old = current - timedelta(days=45)
+    _write_forecast_artifacts(stale_dir, created_at=old)
+    stale = load_forecast_dashboard_artifacts(stale_dir, now=current)
+    assert stale.available and stale.status == "stale"
+
+    metadata_path = fresh_dir / "metadata.json"
+    metadata = json.loads(metadata_path.read_text(encoding="utf-8"))
+    metadata["artifact_schema_version"] = 99
+    metadata_path.write_text(json.dumps(metadata), encoding="utf-8")
+    invalid = load_forecast_dashboard_artifacts(fresh_dir, now=current)
+    assert not invalid.available and invalid.status == "incomplete"
+
+
+def test_forecast_dashboard_rerender_reads_artifacts_without_training(tmp_path: Path) -> None:
+    _write_forecast_artifacts(tmp_path, created_at=datetime.now(timezone.utc))
+    script = (
+        "import app\n"
+        "from pathlib import Path\n"
+        "from src.forecasting.xgboost import XGBoostPriceForecaster\n"
+        f"app.ADVANCED_FORECAST_RESULTS_DIR = Path({str(tmp_path)!r})\n"
+        "original_fit = XGBoostPriceForecaster.fit\n"
+        "try:\n"
+        "    XGBoostPriceForecaster.fit = lambda *args, **kwargs: (_ for _ in ()).throw(AssertionError('unexpected fit'))\n"
+        "    app._render_forecasting()\n"
+        "finally:\n"
+        "    XGBoostPriceForecaster.fit = original_fit\n"
+    )
+    rendered = AppTest.from_string(script, default_timeout=30).run()
+
+    assert not rendered.exception
+    assert len(rendered.dataframe) >= 1
+    visible = " ".join(item.value for group in (rendered.markdown, rendered.caption) for item in group)
+    assert "Saved NIFTY 50 adjusted-close forecast comparison" in visible
+
+
 def test_risk_tab_renders_saved_metrics_and_scope_note(tmp_path: Path) -> None:
     _write_var_artifacts(tmp_path)
     script = (
         "import app\n"
         "from pathlib import Path\n"
         f"app.VAR_RESULTS_DIR = Path({str(tmp_path)!r})\n"
+        f"app.RISK_MONITORING_RESULTS_DIR = Path({str(tmp_path / 'monitoring')!r})\n"
+        f"app.STRESS_TESTING_RESULTS_DIR = Path({str(tmp_path / 'stress')!r})\n"
         "app._render_risk_backtesting('AAPL')\n"
     )
     at = AppTest.from_string(script, default_timeout=30).run()
@@ -222,6 +308,8 @@ def test_risk_tab_renders_gracefully_when_artifacts_are_missing(tmp_path: Path) 
         "import app\n"
         "from pathlib import Path\n"
         f"app.VAR_RESULTS_DIR = Path({str(tmp_path)!r})\n"
+        f"app.RISK_MONITORING_RESULTS_DIR = Path({str(tmp_path / 'monitoring')!r})\n"
+        f"app.STRESS_TESTING_RESULTS_DIR = Path({str(tmp_path / 'stress')!r})\n"
         "app._render_risk_backtesting('^NSEI')\n"
     )
     at = AppTest.from_string(script, default_timeout=30).run()

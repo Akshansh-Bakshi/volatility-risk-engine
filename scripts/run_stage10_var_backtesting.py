@@ -23,11 +23,14 @@ import pandas as pd
 from src.backtesting.var_evaluation import evaluate_var_methods
 from src.config import get_settings
 from src.data.factory import create_market_data_loader
+from src.data.cache import CACHE_SUBDIRECTORY
+from src.data.lineage import build_data_lineage
 from src.data.market_data import MarketDataRequest
 from src.models.walk_forward import run_expanding_volatility_forecast
 from src.preprocessing.returns import build_return_series
 from src.risk.figures import plot_var_breach_counts, plot_var_forecasts
 from src.risk.var import build_var_forecasts
+from src.utils.artifacts import write_artifact_bundles
 
 
 CONFIDENCE_LEVELS = (0.95, 0.99)
@@ -79,16 +82,13 @@ def main() -> None:
         significance_level=SIGNIFICANCE_LEVEL,
     )
 
-    OUTPUT_DIR.mkdir(parents=True, exist_ok=True)
-    var_forecasts.to_csv(OUTPUT_DIR / "daily_var_forecasts.csv", index_label="date")
-    summary.to_csv(OUTPUT_DIR / "backtest_summary.csv", index=False)
-
     first = walk_forward.forecasts.iloc[0]
     warnings = {
         "garch": sorted(set(filter(None, walk_forward.forecasts["garch_notes"]))),
         "egarch": sorted(set(filter(None, walk_forward.forecasts["egarch_notes"]))),
     }
     metadata = {
+        "artifact_schema_version": 1,
         "experiment": "Stage 10 one-day-ahead VaR forecasts and statistical backtesting",
         "data": {
             "source": returns.source,
@@ -103,6 +103,22 @@ def main() -> None:
             "return_observations": returns.return_observations,
             "return_start": returns.first_return_date.isoformat(),
             "return_end": returns.last_return_date.isoformat(),
+            "lineage": build_data_lineage(
+                market_data,
+                cache_directory=settings.data.data_dir / CACHE_SUBDIRECTORY,
+                provisional_handling={
+                    "date": returns.provisional_bar.isoformat() if returns.provisional_bar else None,
+                    "excluded": returns.provisional_bar_excluded,
+                    "include_provisional_bar_setting": settings.preprocessing.include_provisional_bar,
+                },
+                ingestion_configuration={
+                    "cache_enabled": settings.data.use_cache,
+                    "cache_max_age_hours": settings.data.cache_max_age_hours,
+                    "provider_timeout_seconds": settings.data.provider_timeout_seconds,
+                    "provider_retries": settings.data.provider_retries,
+                    "minimum_observations": settings.data.min_observations,
+                },
+            ),
             "preprocessing": {
                 **returns.metadata(),
                 "include_provisional_bar": settings.preprocessing.include_provisional_bar,
@@ -119,6 +135,10 @@ def main() -> None:
             "start": var_forecasts.index[0].date().isoformat(),
             "end": var_forecasts.index[-1].date().isoformat(),
             "observations": len(var_forecasts),
+            "target": "one-day positive loss threshold with realised loss -log_return",
+            "forecast_horizon_sessions": 1,
+            "forecast_origin": "prior close; estimation excludes target return",
+            "metric_units": "percent log-return points; rates are proportions",
             "design": "Expanding-window walk-forward; each model refit uses returns strictly before the forecast date.",
             "first_origin_training_start": returns.first_return_date.isoformat(),
             "first_origin_training_end": pd.Timestamp(first["garch_fit_end"]).date().isoformat(),
@@ -160,18 +180,23 @@ def main() -> None:
         },
         "duration_seconds": time.perf_counter() - started,
     }
-    (OUTPUT_DIR / "metadata.json").write_text(
-        json.dumps(metadata, indent=2, ensure_ascii=False), encoding="utf-8"
-    )
-
     fig = plot_var_forecasts(
         var_forecasts,
         title=f"NIFTY 50 one-day VaR ({metadata['evaluation']['start']} to {metadata['evaluation']['end']})",
     )
-    fig.savefig(OUTPUT_DIR / "var_forecast_comparison.png", dpi=160, bbox_inches="tight")
-    fig.clear()
+    forecast_figure = fig
     fig = plot_var_breach_counts(summary)
-    fig.savefig(OUTPUT_DIR / "var_breach_counts.png", dpi=160, bbox_inches="tight")
+    breach_figure = fig
+    write_artifact_bundles({OUTPUT_DIR: {
+        "daily_var_forecasts.csv": lambda path: var_forecasts.to_csv(path, index_label="date"),
+        "backtest_summary.csv": lambda path: summary.to_csv(path, index=False),
+        "metadata.json": lambda path: path.write_text(
+            json.dumps(metadata, indent=2, ensure_ascii=False), encoding="utf-8"
+        ),
+        "var_forecast_comparison.png": lambda path: forecast_figure.savefig(path, dpi=160, bbox_inches="tight"),
+        "var_breach_counts.png": lambda path: breach_figure.savefig(path, dpi=160, bbox_inches="tight"),
+    }})
+    forecast_figure.clear()
     fig.clear()
 
     print(json.dumps({

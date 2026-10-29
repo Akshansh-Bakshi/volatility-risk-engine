@@ -1,5 +1,6 @@
-"""Market risk measures.
+"""Market risk measures, trailing monitoring, and transparent stress scenarios.
 
-Responsibility: Value-at-Risk and related measures computed from volatility
-forecasts and distributional assumptions.
+The package includes positive-loss VaR, time-aligned rolling risk metrics, and
+long-only portfolio what-if calculations. Stress scenarios are deterministic
+assumptions, not forecasts or probabilities.
 """

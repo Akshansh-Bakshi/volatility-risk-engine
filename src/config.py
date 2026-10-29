@@ -43,6 +43,8 @@ DEFAULT_ADJUST_PRICES = True
 DEFAULT_MIN_OBSERVATIONS = 250
 DEFAULT_USE_CACHE = True
 DEFAULT_CACHE_MAX_AGE_HOURS = 6.0
+DEFAULT_PROVIDER_TIMEOUT_SECONDS = 15.0
+DEFAULT_PROVIDER_RETRIES = 1
 DEFAULT_INCLUDE_PROVISIONAL_BAR = False
 DEFAULT_MAX_GAP_WEEKDAYS = 1
 DEFAULT_MIN_RETURNS = 250
@@ -81,6 +83,8 @@ class DataConfig:
             for a download to be accepted.
         use_cache: Whether downloads are cached on disk under ``data_dir``.
         cache_max_age_hours: How long a cached "latest" download counts as current.
+        provider_timeout_seconds: Per-request timeout for Yahoo Finance.
+        provider_retries: Bounded retries after transient connectivity failures.
     """
 
     ticker: str = DEFAULT_TICKER
@@ -91,6 +95,8 @@ class DataConfig:
     min_observations: int = DEFAULT_MIN_OBSERVATIONS
     use_cache: bool = DEFAULT_USE_CACHE
     cache_max_age_hours: float = DEFAULT_CACHE_MAX_AGE_HOURS
+    provider_timeout_seconds: float = DEFAULT_PROVIDER_TIMEOUT_SECONDS
+    provider_retries: int = DEFAULT_PROVIDER_RETRIES
 
     def __post_init__(self) -> None:
         ticker = self.ticker.strip().upper() if isinstance(self.ticker, str) else ""
@@ -119,6 +125,17 @@ class DataConfig:
                 f"data.cache_max_age_hours must be a positive, finite number; got {max_age!r}."
             )
         object.__setattr__(self, "cache_max_age_hours", float(max_age))
+        timeout = self.provider_timeout_seconds
+        if isinstance(timeout, bool) or not isinstance(timeout, (int, float)) or not math.isfinite(timeout) or timeout <= 0:
+            raise ConfigurationError(
+                f"data.provider_timeout_seconds must be a positive finite number; got {timeout!r}."
+            )
+        object.__setattr__(self, "provider_timeout_seconds", float(timeout))
+        retries = self.provider_retries
+        if isinstance(retries, bool) or not isinstance(retries, int) or not 0 <= retries <= 5:
+            raise ConfigurationError(
+                f"data.provider_retries must be an integer between 0 and 5; got {retries!r}."
+            )
 
 
 @dataclass(frozen=True)
@@ -295,6 +312,12 @@ def _load_data_config(env: Mapping[str, str]) -> DataConfig:
         kwargs["cache_max_age_hours"] = _parse_number(
             "CACHE_MAX_AGE_HOURS", max_age, float, "a number of hours"
         )
+    if (timeout := _read_env(env, "PROVIDER_TIMEOUT_SECONDS")) is not None:
+        kwargs["provider_timeout_seconds"] = _parse_number(
+            "PROVIDER_TIMEOUT_SECONDS", timeout, float, "a number of seconds"
+        )
+    if (retries := _read_env(env, "PROVIDER_RETRIES")) is not None:
+        kwargs["provider_retries"] = _parse_number("PROVIDER_RETRIES", retries, int, "an integer")
     return DataConfig(**kwargs)
 
 

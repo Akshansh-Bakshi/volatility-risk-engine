@@ -1,0 +1,59 @@
+{
+  "observations": 4675,
+  "start": "2007-09-18",
+  "end": "2026-10-08",
+  "windows": {
+    "realised_volatility_sessions": 20,
+    "historical_var_es_prior_sessions": 250,
+    "breach_summary_sessions": 60,
+    "annualisation_factor": 252,
+    "quantile_method": "linear"
+  },
+  "confidence_levels": [
+    0.95,
+    0.99
+  ],
+  "warmup_observations": {
+    "realised_volatility": 19,
+    "historical_var_and_es": 250,
+    "note": "Warm-up rows remain in the daily file with missing metrics because no full trailing window exists yet."
+  },
+  "maximum_drawdown_pct": -59.85591399335757,
+  "latest": {
+    "realised_volatility_20d_annualised_pct": 12.741484855390269,
+    "historical_var_95_pct": 1.5087918294525806,
+    "historical_es_95_pct": 1.9986099642989197,
+    "historical_var_99_pct": 2.1516572695084286,
+    "historical_es_99_pct": 2.705781837562647
+  },
+  "breaches": {
+    "95": {
+      "all_count": 234,
+      "all_rate": 0.05288135593220339,
+      "all_observations": 4425,
+      "recent_count": 3,
+      "recent_rate": 0.05,
+      "recent_observations": 60,
+      "recent_window_sessions": 60
+    },
+    "99": {
+      "all_count": 68,
+      "all_rate": 0.015367231638418079,
+      "all_observations": 4425,
+      "recent_count": 0,
+      "recent_rate": 0.0,
+      "recent_observations": 60,
+      "recent_window_sessions": 60
+    }
+  },
+  "conventions": {
+    "input_returns": "decimal log returns ln(P_t / P_(t-1))",
+    "risk_return_scale": "percent log-return points",
+    "realised_volatility": "sample standard deviation (ddof=1) of trailing returns through the date, annualised by sqrt(252)",
+    "var": "linear empirical quantile at confidence of prior-window positive losses (-log return)",
+    "expected_shortfall": "mean of prior-window losses greater than or equal to the empirical VaR threshold",
+    "breach": "current realised loss > VaR estimated from prior observations only",
+    "drawdown": "(adjusted_close / running_peak_adjusted_close - 1) * 100 through the date",
+    "gap_policy": "gap-spanning returns are retained, as in ReturnSeries, and remain part of trailing windows"
+  }
+}

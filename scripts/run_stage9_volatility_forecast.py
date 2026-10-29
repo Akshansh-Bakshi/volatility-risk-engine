@@ -9,7 +9,7 @@ from __future__ import annotations
 
 import json
 import time
-from datetime import date
+from datetime import date, datetime, timezone
 from pathlib import Path
 
 import matplotlib
@@ -18,10 +18,13 @@ import pandas as pd
 
 from src.config import get_settings
 from src.data.factory import create_market_data_loader
+from src.data.cache import CACHE_SUBDIRECTORY
+from src.data.lineage import build_data_lineage
 from src.data.market_data import MarketDataRequest
 from src.models.figures import plot_variance_forecasts
 from src.models.walk_forward import run_expanding_volatility_forecast
 from src.preprocessing.returns import build_return_series
+from src.utils.artifacts import write_artifact_bundles
 
 
 def main() -> None:
@@ -42,8 +45,6 @@ def main() -> None:
     )
 
     output_dir = Path("results/volatility_forecasting/nifty50")
-    output_dir.mkdir(parents=True, exist_ok=True)
-    walk_forward.forecasts.to_csv(output_dir / "daily_forecasts.csv", index_label="date")
 
     summary = walk_forward.metrics.copy()
     summary["ticker"] = returns.ticker
@@ -60,12 +61,29 @@ def main() -> None:
     summary["evaluation_observations"] = walk_forward.evaluation_observations
     summary["garch_config"] = json.dumps(walk_forward.garch_config, sort_keys=True)
     summary["egarch_config"] = json.dumps(walk_forward.egarch_config, sort_keys=True)
-    summary.to_csv(output_dir / "summary_metrics.csv", index=False)
 
     gap_flags = int(walk_forward.forecasts["gap_flagged"].sum())
     metadata = {
+        "artifact_schema_version": 1,
+        "created_at_utc": datetime.now(timezone.utc).isoformat(),
         "experiment": "Stage 9 expanding-window one-step-ahead volatility forecasting",
         "data_source": returns.source,
+        "data_lineage": build_data_lineage(
+            market_data,
+            cache_directory=settings.data.data_dir / CACHE_SUBDIRECTORY,
+            provisional_handling={
+                "date": returns.provisional_bar.isoformat() if returns.provisional_bar else None,
+                "excluded": returns.provisional_bar_excluded,
+                "include_provisional_bar_setting": settings.preprocessing.include_provisional_bar,
+            },
+            ingestion_configuration={
+                "cache_enabled": settings.data.use_cache,
+                "cache_max_age_hours": settings.data.cache_max_age_hours,
+                "provider_timeout_seconds": settings.data.provider_timeout_seconds,
+                "provider_retries": settings.data.provider_retries,
+                "minimum_observations": settings.data.min_observations,
+            },
+        ),
         "ticker": returns.ticker,
         "requested_start": request.start.isoformat(),
         "requested_end": "latest available",
@@ -86,6 +104,9 @@ def main() -> None:
             "start": walk_forward.evaluation_start,
             "end": walk_forward.evaluation_end,
             "observations": walk_forward.evaluation_observations,
+            "target": "one-session realised variance proxy: squared daily log return",
+            "forecast_horizon_sessions": 1,
+            "forecast_origin": "prior close; all fitting uses returns strictly before target date",
             "first_origin_training_start": returns.first_return_date.isoformat(),
             "first_origin_training_end": pd.Timestamp(
                 walk_forward.forecasts["garch_fit_end"].iloc[0]
@@ -126,11 +147,6 @@ def main() -> None:
         },
         "duration_seconds": time.perf_counter() - started,
     }
-    (output_dir / "metadata.json").write_text(
-        json.dumps(metadata, indent=2, ensure_ascii=False),
-        encoding="utf-8",
-    )
-
     fig = plot_variance_forecasts(
         walk_forward.forecasts,
         title=(
@@ -138,7 +154,14 @@ def main() -> None:
             f"({walk_forward.evaluation_start} to {walk_forward.evaluation_end})"
         ),
     )
-    fig.savefig(output_dir / "variance_forecast_comparison.png", dpi=160, bbox_inches="tight")
+    write_artifact_bundles({output_dir: {
+        "daily_forecasts.csv": lambda path: walk_forward.forecasts.to_csv(path, index_label="date"),
+        "summary_metrics.csv": lambda path: summary.to_csv(path, index=False),
+        "metadata.json": lambda path: path.write_text(
+            json.dumps(metadata, indent=2, ensure_ascii=False), encoding="utf-8"
+        ),
+        "variance_forecast_comparison.png": lambda path: fig.savefig(path, dpi=160, bbox_inches="tight"),
+    }})
     fig.clear()
     print(json.dumps({
         "output_dir": str(output_dir),

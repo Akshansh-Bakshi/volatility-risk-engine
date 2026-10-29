@@ -1,0 +1,118 @@
+{
+  "experiment": "Stage 12A recursive XGBoost adjusted-close forecasting",
+  "target": {
+    "name": "adjusted close price",
+    "definition": "MarketData.price (close), one-session-ahead supervised target; multi-step test forecast is recursive",
+    "units": "index points or asset currency units"
+  },
+  "data": {
+    "source": "yahoo_finance",
+    "ticker": "^NSEI",
+    "adjusted_prices": true,
+    "requested_start": "2005-01-01",
+    "requested_end": "2026-10-19",
+    "retrieved_at_utc": "2026-10-19T10:05:00.260921+00:00",
+    "actual_start": "2007-09-17",
+    "actual_end": "2026-10-19",
+    "observations": 4683,
+    "rows_dropped_by_loader": 31
+  },
+  "split": {
+    "ticker": "^NSEI",
+    "series_description": "adjusted close price",
+    "frequency": "1d",
+    "train_start": "2007-09-17",
+    "train_end": "2026-07-23",
+    "n_train": 4623,
+    "test_start": "2026-07-24",
+    "test_end": "2026-10-19",
+    "n_test": 60,
+    "total_observations": 4683,
+    "split_method": "chronological \u2014 no random shuffling"
+  },
+  "evaluation": {
+    "start": "2026-07-24",
+    "end": "2026-10-19",
+    "observations": 60
+  },
+  "features": {
+    "lags": [
+      1,
+      2,
+      5,
+      10,
+      20
+    ],
+    "past_only_rolling_windows": [
+      5,
+      20
+    ],
+    "rolling_std_ddof": 1,
+    "calendar_features": "none",
+    "warmup_rows_dropped": 20
+  },
+  "models": {
+    "xgboost": {
+      "configuration": {
+        "n_estimators": 300,
+        "max_depth": 3,
+        "learning_rate": 0.05,
+        "subsample": 0.8,
+        "colsample_bytree": 0.8,
+        "objective": "reg:squarederror",
+        "random_state": 42,
+        "n_jobs": 1,
+        "tree_method": "hist",
+        "verbosity": 0
+      },
+      "version": "3.2.0",
+      "forecast_strategy": "recursive; each prediction is appended to lag history"
+    },
+    "baselines": [
+      {
+        "name": "ARIMA(1,1,0)",
+        "configuration": {
+          "order": [
+            1,
+            1,
+            0
+          ]
+        }
+      },
+      {
+        "name": "SARIMA(1,1,0)(1,0,0,5)",
+        "configuration": {
+          "order": [
+            1,
+            1,
+            0
+          ],
+          "seasonal_order": [
+            1,
+            0,
+            0,
+            5
+          ]
+        }
+      },
+      {
+        "name": "HoltWinters(trend=add)",
+        "configuration": {
+          "trend": "add",
+          "seasonal": null,
+          "damped_trend": false
+        }
+      }
+    ]
+  },
+  "evaluation_metrics": {
+    "definitions": {
+      "rmse": "sqrt(mean((actual - forecast)^2))",
+      "mae": "mean(abs(actual - forecast))",
+      "mape": "100 * mean(abs(error / actual)); exact zero actuals excluded by shared evaluator"
+    },
+    "caveat": "MAPE is scale-sensitive and unsuitable when actuals are zero or near zero; RMSE/MAE are primary."
+  },
+  "test_data_policy": "The final holdout is not used for feature fitting, transformations, or hyperparameter selection. XGBoost test predictions are recursive.",
+  "duration_seconds": 3.165226500001154
+}
